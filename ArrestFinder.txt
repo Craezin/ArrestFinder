@@ -203,6 +203,20 @@
             #af-body {
                 padding: 10px 12px;
             }
+            .af-set-key-btn {
+                margin-left: 8px;
+                background: ${COLORS.accent};
+                color: #fff;
+                border: none;
+                padding: 3px 10px;
+                border-radius: 4px;
+                font-size: 12px;
+                font-weight: bold;
+                cursor: pointer;
+                vertical-align: middle;
+                transition: background 0.15s;
+            }
+            .af-set-key-btn:hover { background: #217dbb; }
             #af-status {
                 color: ${COLORS.muted};
                 font-size: 12px;
@@ -409,23 +423,7 @@
         verdictBox.style.borderColor = color;
         verdictBox.style.color = color;
 
-        let jailSummary = '';
-        switch (verdict) {
-            case 'good':
-                jailSummary = `Jailed count unchanged across all 3 snapshots (${fmtNum(jailNow)}).`;
-                break;
-            case 'potential':
-                jailSummary = `Jailed count stable now vs 1mo (${fmtNum(jailNow)}) but was ${fmtNum(jailMonth3)} three months ago.`;
-                break;
-            case 'bad':
-                jailSummary = `Jailed count changed recently: now ${fmtNum(jailNow)}, 1mo ago ${fmtNum(jailMonth1)}, 3mo ago ${fmtNum(jailMonth3)}.`;
-                break;
-        }
-
-        verdictBox.innerHTML = `
-            ${label}
-            <div style="font-size:11px;font-weight:normal;margin-top:4px;color:${COLORS.text};">${jailSummary}</div>
-        `;
+        verdictBox.innerHTML = label;
 
         // Show stat table
         tableWrap.style.display = 'block';
@@ -460,9 +458,22 @@
 
         const key = getSavedKey();
         if (!key) {
-            // No key — show the warning and stop; nothing else to do
+            // No key — show the warning with an inline set-key button
             statusEl.style.display = 'block';
-            statusEl.innerHTML = `<span style="color:#e74c3c;">⚠ API Key Missing</span> — open the <strong>Tampermonkey menu</strong> to add one.`;
+            statusEl.innerHTML = `
+                <span style="color:#e74c3c;">⚠ API Key Missing</span>
+                <button id="af-set-key-btn" class="af-set-key-btn">Set API Key</button>
+            `;
+            document.getElementById('af-set-key-btn').addEventListener('click', () => {
+                const input = prompt('ArrestFinder — Enter your Torn API v2 key:');
+                if (input === null) return; // cancelled
+                const trimmed = input.trim();
+                if (!trimmed) return;
+                saveKey(trimmed);
+                // Remove panel and re-inject so analysis runs fresh with the new key
+                panel.remove();
+                injectPanel(userId);
+            });
             return;
         }
 
