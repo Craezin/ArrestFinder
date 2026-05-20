@@ -8,6 +8,8 @@
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
+// @grant        GM_registerMenuCommand
+// @grant        GM_deleteValue
 // @connect      api.torn.com
 // @run-at       document-idle
 // ==/UserScript==
@@ -16,14 +18,14 @@
     'use strict';
 
     // ─── Constants ────────────────────────────────────────────────────────────
-    const SCRIPT_KEY = 'arrestfinder_apikey';
-    const STATS_PARAM = 'jailed,criminaloffenses,vandalism,theft,counterfeiting,fraud,illicitservices,cybercrime,extortion,illegalproduction';
-    const COMMENT = 'ArrestFinder';
+    const SCRIPT_KEY   = 'arrestfinder_apikey';
+    const STATS_PARAM  = 'jailed,criminaloffenses,vandalism,theft,counterfeiting,fraud,illicitservices,cybercrime,extortion,illegalproduction';
+    const COMMENT      = 'ArrestFinder';
 
     const COLORS = {
-        good:      '#2ecc71', // green
-        potential: '#f39c12', // amber
-        bad:       '#e74c3c', // red
+        good:      '#2ecc71',   // green
+        potential: '#f39c12',   // amber
+        bad:       '#e74c3c',   // red
         border:    '#3d3d3d',
         bg:        '#1a1a1a',
         bgAlt:     '#252525',
@@ -39,12 +41,58 @@
         return params.get('XID') || params.get('xid');
     }
 
-    function nowTs() { return Math.floor(Date.now() / 1000); }
+    function nowTs()         { return Math.floor(Date.now() / 1000); }
     function oneMonthAgoTs() { return nowTs() - 30 * 24 * 60 * 60; }
     function threeMonthAgoTs() { return nowTs() - 90 * 24 * 60 * 60; }
 
     function getSavedKey() { return GM_getValue(SCRIPT_KEY, ''); }
-    function saveKey(k) { GM_setValue(SCRIPT_KEY, k); }
+    function saveKey(k)    { GM_setValue(SCRIPT_KEY, k.trim()); }
+    function deleteKey()   { GM_deleteValue(SCRIPT_KEY); }
+
+    // ─── Tampermonkey Menu Commands ───────────────────────────────────────────
+    function registerMenuCommands() {
+        GM_registerMenuCommand('🔑 Set API Key', () => {
+            const current = getSavedKey();
+            const input = prompt(
+                'ArrestFinder — Enter your Torn API v2 key:\n(Leave blank and click OK to clear the saved key)',
+                current
+            );
+            // prompt returns null if cancelled — do nothing
+            if (input === null) return;
+            const trimmed = input.trim();
+            if (trimmed === '') {
+                deleteKey();
+                alert('ArrestFinder: API key cleared.');
+            } else {
+                saveKey(trimmed);
+                alert('ArrestFinder: API key saved successfully.');
+            }
+            // Refresh the status badge on the panel if it is currently visible
+            const statusEl = document.getElementById('af-status');
+            if (statusEl) updateKeyStatus(statusEl);
+        });
+
+        GM_registerMenuCommand('🗑️ Clear API Key', () => {
+            if (!confirm('ArrestFinder: Clear the saved API key?')) return;
+            deleteKey();
+            alert('ArrestFinder: API key cleared.');
+            const statusEl = document.getElementById('af-status');
+            if (statusEl) updateKeyStatus(statusEl);
+        });
+    }
+
+    // Updates the key-status element visibility.
+    // Hidden entirely when a key exists; only shown with a warning when missing.
+    function updateKeyStatus(statusEl) {
+        const key = getSavedKey();
+        if (key) {
+            statusEl.style.display = 'none';
+            statusEl.innerHTML = '';
+        } else {
+            statusEl.style.display = 'block';
+            statusEl.innerHTML = `<span style="color:#e74c3c;">✘ No API key set</span> — open the <strong>Tampermonkey menu</strong> to add one.`;
+        }
+    }
 
     function buildUrl(userId, apiKey, timestamp) {
         return `https://api.torn.com/v2/user/${userId}/personalstats?stat=${STATS_PARAM}&timestamp=${timestamp}&comment=${COMMENT}&key=${apiKey}`;
@@ -99,9 +147,9 @@
     }
 
     const VERDICT = {
-        good:      { label: '✅ Good Arrest Target', color: COLORS.good },
+        good:      { label: '✅ Good Arrest Target',      color: COLORS.good },
         potential: { label: '⚠️ Potential Arrest Target', color: COLORS.potential },
-        bad:       { label: '❌ Bad Arrest Target', color: COLORS.bad },
+        bad:       { label: '❌ Bad Arrest Target',        color: COLORS.bad },
     };
 
     // ─── UI Builders ──────────────────────────────────────────────────────────
@@ -114,9 +162,13 @@
                 background: ${COLORS.bg};
                 border: 1px solid ${COLORS.border};
                 border-radius: 6px;
-                margin: 10px 0;
+                margin: 10px 0 0 0;
                 color: ${COLORS.text};
                 overflow: hidden;
+                width: 100%;
+                clear: both;
+                box-sizing: border-box;
+                display: block;
             }
             #af-panel .af-header {
                 background: ${COLORS.header};
@@ -151,23 +203,9 @@
             #af-body {
                 padding: 10px 12px;
             }
-            #af-api-row {
-                display: flex;
-                gap: 6px;
+            #af-run-row {
                 margin-bottom: 10px;
-                align-items: center;
             }
-            #af-api-row input {
-                flex: 1;
-                background: #111;
-                border: 1px solid ${COLORS.border};
-                color: ${COLORS.text};
-                padding: 5px 8px;
-                border-radius: 4px;
-                font-size: 12px;
-                font-family: monospace;
-            }
-            #af-api-row input:focus { outline: 1px solid ${COLORS.accent}; }
             .af-btn {
                 background: ${COLORS.accent};
                 color: #fff;
@@ -187,6 +225,7 @@
                 font-size: 12px;
                 margin-bottom: 8px;
                 min-height: 16px;
+                display: none;
             }
             #af-verdict-box {
                 display: none;
@@ -264,11 +303,10 @@
                 <span class="af-toggle-icon">▼</span>
             </div>
             <div id="af-body">
-                <div id="af-api-row">
-                    <input id="af-api-input" type="password" placeholder="Enter your Torn API v2 key…" autocomplete="off" />
+                <div id="af-status"></div>
+                <div id="af-run-row">
                     <button class="af-btn" id="af-run-btn">Analyze</button>
                 </div>
-                <div id="af-status"></div>
                 <div id="af-verdict-box"></div>
                 <div id="af-table-wrap"></div>
             </div>
@@ -281,7 +319,7 @@
         if (now == null || then == null) return '';
         const d = now - then;
         if (d === 0) return `<span class="af-delta-zero">±0</span>`;
-        if (d > 0) return `<span class="af-delta-up">+${fmtNum(d)}</span>`;
+        if (d > 0)   return `<span class="af-delta-up">+${fmtNum(d)}</span>`;
         return `<span class="af-delta-down">${fmtNum(d)}</span>`;
     }
 
@@ -314,9 +352,9 @@
 
         let rows = '';
         for (const stat of STAT_ORDER) {
-            const now = statsNow[stat];
-            const m1 = statsMonth1[stat];
-            const m3 = statsMonth3[stat];
+            const now    = statsNow[stat];
+            const m1     = statsMonth1[stat];
+            const m3     = statsMonth3[stat];
             const isJail = stat === 'jailed';
             rows += `
                 <tr>
@@ -351,7 +389,7 @@
         verdictBox.style.display = 'none';
 
         const steps = [
-            { label: 'Fetching current stats…', ts: nowTs() },
+            { label: 'Fetching current stats…',        ts: nowTs() },
             { label: 'Fetching stats from 1 month ago…', ts: oneMonthAgoTs() },
             { label: 'Fetching stats from 3 months ago…', ts: threeMonthAgoTs() },
         ];
@@ -360,7 +398,7 @@
         for (const step of steps) {
             statusEl.innerHTML = `<span class="af-spinner"></span>${step.label}`;
             try {
-                const url = buildUrl(userId, apiKey, step.ts);
+                const url  = buildUrl(userId, apiKey, step.ts);
                 const json = await fetchGM(url);
                 if (json.error) {
                     throw new Error(`API error ${json.error.code}: ${json.error.error}`);
@@ -374,7 +412,7 @@
         }
 
         const [statsNow, statsMonth1, statsMonth3] = results;
-        const jailNow = statsNow['jailed']    ?? 0;
+        const jailNow    = statsNow['jailed']    ?? 0;
         const jailMonth1 = statsMonth1['jailed'] ?? 0;
         const jailMonth3 = statsMonth3['jailed'] ?? 0;
 
@@ -414,65 +452,68 @@
     }
 
     // ─── Injection ────────────────────────────────────────────────────────────
-        function injectPanel(userId) {
+    function injectPanel(userId) {
         // Target exactly: <div class="content-title m-bottom10">
         const container = document.querySelector('div.content-title.m-bottom10');
         if (!container) {
             console.warn('[ArrestFinder] Could not find div.content-title.m-bottom10 — aborting injection.');
             return;
         }
+
         // Guard against double-injection on SPA navigations
         if (document.getElementById('af-panel')) return;
+
         injectStyles();
         const panel = buildPanel();
+
         // Append as the last child inside the content-title div so it sits
         // below the existing h4 / player name / links-top-wrap content.
         container.appendChild(panel);
+
         // ─── Wire up controls ──────────────────────────────────────────────
-        const header = panel.querySelector('#af-header');
-        const apiInput = panel.querySelector('#af-api-input');
-        const runBtn = panel.querySelector('#af-run-btn');
-        const statusEl = panel.querySelector('#af-status');
+        const header     = panel.querySelector('#af-header');
+        const runBtn     = panel.querySelector('#af-run-btn');
+        const statusEl   = panel.querySelector('#af-status');
         const verdictBox = panel.querySelector('#af-verdict-box');
-        const tableWrap = panel.querySelector('#af-table-wrap');
-        // Restore saved key
-        const saved = getSavedKey();
-        if (saved) apiInput.value = saved;
+        const tableWrap  = panel.querySelector('#af-table-wrap');
+
+        // Show current key state in the status line
+        updateKeyStatus(statusEl);
+
         // Collapse toggle
         header.addEventListener('click', () => {
             panel.classList.toggle('af-collapsed');
         });
-        // Run analysis on button click
+
+        // Run analysis — key is always read from GM storage, never from an input
         runBtn.addEventListener('click', async () => {
-            const key = apiInput.value.trim();
+            const key = getSavedKey();
             if (!key) {
-                statusEl.textContent = '⚠️ Please enter your API key first.';
+                statusEl.innerHTML = `<span style="color:#e74c3c;">✘ No API key set.</span> Open the <strong>Tampermonkey menu</strong> and choose <em>"🔑 Set API Key"</em>.`;
                 return;
             }
-            saveKey(key);
             await runAnalysis(userId, key, statusEl, verdictBox, tableWrap, runBtn);
-        });
-        // Also trigger on Enter key in the input field
-        apiInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') runBtn.click();
+            // Restore key status after analysis completes
+            updateKeyStatus(statusEl);
         });
     }
 
     // ─── Entry Point ──────────────────────────────────────────────────────────
     function init() {
+        // Register Tampermonkey menu commands regardless of which page we're on
+        // so the user can set/clear their key from any Torn page.
+        registerMenuCommands();
+
         const userId = getTargetUserId();
         if (!userId) return; // Not on a profile page
 
-        // Wait a tick for the page's React to render profile sections
+        // Poll until div.content-title.m-bottom10 is present in the DOM.
         const tryInject = () => {
-            // Prefer the profile notes block which sits in the right sidebar
-            const ready = document.getElementById('profileNotes')
-                       || document.querySelector('.profile-right')
-                       || document.querySelector('[class*="profile"]');
-            if (ready) {
+            const target = document.querySelector('div.content-title.m-bottom10');
+            if (target) {
                 injectPanel(userId);
             } else {
-                setTimeout(tryInject, 500);
+                setTimeout(tryInject, 300);
             }
         };
 
