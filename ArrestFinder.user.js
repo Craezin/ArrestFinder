@@ -5,6 +5,8 @@
 // @description  Analyzes a player's jailed & crime stats across three time windows to classify them as a Good, Potential, or Bad arrest target.
 // @author       ArrestFinder
 // @match        https://www.torn.com/profiles.php*
+// @downloadURL https://github.com/Craezin/ArrestFinder/raw/refs/heads/main/ArrestFinder.user.js
+// @updateURL https://github.com/Craezin/ArrestFinder/raw/refs/heads/main/ArrestFinder.user.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
