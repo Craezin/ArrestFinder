@@ -295,6 +295,7 @@
     function buildPanel() {
         const panel = document.createElement('div');
         panel.id = 'af-panel';
+        panel.classList.add('af-collapsed');
         panel.innerHTML = `
             <div class="af-header" id="af-header">
                 <div class="af-header-title">
