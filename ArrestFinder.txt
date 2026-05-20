@@ -203,23 +203,6 @@
             #af-body {
                 padding: 10px 12px;
             }
-            #af-run-row {
-                margin-bottom: 10px;
-            }
-            .af-btn {
-                background: ${COLORS.accent};
-                color: #fff;
-                border: none;
-                padding: 5px 12px;
-                border-radius: 4px;
-                font-size: 12px;
-                cursor: pointer;
-                white-space: nowrap;
-                font-weight: bold;
-                transition: background 0.15s;
-            }
-            .af-btn:hover { background: #217dbb; }
-            .af-btn:disabled { background: #555; cursor: not-allowed; }
             #af-status {
                 color: ${COLORS.muted};
                 font-size: 12px;
@@ -305,9 +288,6 @@
             </div>
             <div id="af-body">
                 <div id="af-status"></div>
-                <div id="af-run-row">
-                    <button class="af-btn" id="af-run-btn">Analyze</button>
-                </div>
                 <div id="af-verdict-box"></div>
                 <div id="af-table-wrap"></div>
             </div>
@@ -384,19 +364,19 @@
     }
 
     // ─── Main Logic ───────────────────────────────────────────────────────────
-    async function runAnalysis(userId, apiKey, statusEl, verdictBox, tableWrap, runBtn) {
-        runBtn.disabled = true;
+    async function runAnalysis(userId, apiKey, statusEl, verdictBox, tableWrap) {
         tableWrap.style.display = 'none';
         verdictBox.style.display = 'none';
 
         const steps = [
-            { label: 'Fetching current stats…',        ts: nowTs() },
+            { label: 'Fetching current stats…',          ts: nowTs() },
             { label: 'Fetching stats from 1 month ago…', ts: oneMonthAgoTs() },
             { label: 'Fetching stats from 3 months ago…', ts: threeMonthAgoTs() },
         ];
 
         const results = [];
         for (const step of steps) {
+            statusEl.style.display = 'block';
             statusEl.innerHTML = `<span class="af-spinner"></span>${step.label}`;
             try {
                 const url  = buildUrl(userId, apiKey, step.ts);
@@ -407,10 +387,13 @@
                 results.push(parseStats(json));
             } catch (err) {
                 statusEl.textContent = `❌ ${err.message}`;
-                runBtn.disabled = false;
                 return;
             }
         }
+
+        // Hide status now that fetching is done
+        statusEl.style.display = 'none';
+        statusEl.innerHTML = '';
 
         const [statsNow, statsMonth1, statsMonth3] = results;
         const jailNow    = statsNow['jailed']    ?? 0;
@@ -447,9 +430,6 @@
         // Show stat table
         tableWrap.style.display = 'block';
         tableWrap.innerHTML = buildResultTable(statsNow, statsMonth1, statsMonth3);
-
-        statusEl.textContent = 'Analysis complete.';
-        runBtn.disabled = false;
     }
 
     // ─── Injection ────────────────────────────────────────────────────────────
@@ -466,37 +446,28 @@
 
         injectStyles();
         const panel = buildPanel();
-
-        // Append as the last child inside the content-title div so it sits
-        // below the existing h4 / player name / links-top-wrap content.
         container.appendChild(panel);
 
-        // ─── Wire up controls ──────────────────────────────────────────────
         const header     = panel.querySelector('#af-header');
-        const runBtn     = panel.querySelector('#af-run-btn');
         const statusEl   = panel.querySelector('#af-status');
         const verdictBox = panel.querySelector('#af-verdict-box');
         const tableWrap  = panel.querySelector('#af-table-wrap');
-
-        // Show current key state in the status line
-        updateKeyStatus(statusEl);
 
         // Collapse toggle
         header.addEventListener('click', () => {
             panel.classList.toggle('af-collapsed');
         });
 
-        // Run analysis — key is always read from GM storage, never from an input
-        runBtn.addEventListener('click', async () => {
-            const key = getSavedKey();
-            if (!key) {
-                statusEl.innerHTML = `<span style="color:#e74c3c;">✘ No API key set.</span> Open the <strong>Tampermonkey menu</strong> and choose <em>"🔑 Set API Key"</em>.`;
-                return;
-            }
-            await runAnalysis(userId, key, statusEl, verdictBox, tableWrap, runBtn);
-            // Restore key status after analysis completes
-            updateKeyStatus(statusEl);
-        });
+        const key = getSavedKey();
+        if (!key) {
+            // No key — show the warning and stop; nothing else to do
+            statusEl.style.display = 'block';
+            statusEl.innerHTML = `<span style="color:#e74c3c;">⚠ API Key Missing</span> — open the <strong>Tampermonkey menu</strong> to add one.`;
+            return;
+        }
+
+        // Key present — run immediately, status stays hidden
+        runAnalysis(userId, key, statusEl, verdictBox, tableWrap);
     }
 
     // ─── Entry Point ──────────────────────────────────────────────────────────
