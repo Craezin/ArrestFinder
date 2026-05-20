@@ -1,0 +1,553 @@
+// ==UserScript==
+// @name         ArrestFinder
+// @namespace    https://www.torn.com/
+// @version      1.0.0
+// @description  Analyzes a player's jailed & crime stats across three time windows to classify them as a Good, Potential, or Bad arrest target.
+// @author       ArrestFinder
+// @match        https://www.torn.com/profiles.php*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_xmlhttpRequest
+// @grant        GM_registerMenuCommand
+// @grant        GM_deleteValue
+// @connect      api.torn.com
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ─── Constants ────────────────────────────────────────────────────────────
+    const SCRIPT_KEY   = 'arrestfinder_apikey';
+    const STATS_PARAM  = 'jailed,criminaloffenses,vandalism,theft,counterfeiting,fraud,illicitservices,cybercrime,extortion,illegalproduction';
+    const COMMENT      = 'ArrestFinder';
+
+    const COLORS = {
+        good:      '#2ecc71',   // green
+        potential: '#f39c12',   // amber
+        bad:       '#e74c3c',   // red
+        border:    '#3d3d3d',
+        bg:        '#1a1a1a',
+        bgAlt:     '#252525',
+        text:      '#e0e0e0',
+        muted:     '#888',
+        accent:    '#3498db',
+        header:    '#2c2c2c',
+    };
+
+    // ─── Helpers ──────────────────────────────────────────────────────────────
+    function getTargetUserId() {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('XID') || params.get('xid');
+    }
+
+    function nowTs()         { return Math.floor(Date.now() / 1000); }
+    function oneMonthAgoTs() { return nowTs() - 30 * 24 * 60 * 60; }
+    function threeMonthAgoTs() { return nowTs() - 90 * 24 * 60 * 60; }
+
+    function getSavedKey() { return GM_getValue(SCRIPT_KEY, ''); }
+    function saveKey(k)    { GM_setValue(SCRIPT_KEY, k.trim()); }
+    function deleteKey()   { GM_deleteValue(SCRIPT_KEY); }
+
+    // ─── Tampermonkey Menu Commands ───────────────────────────────────────────
+    function registerMenuCommands() {
+        GM_registerMenuCommand('🔑 Set API Key', () => {
+            const current = getSavedKey();
+            const input = prompt(
+                'ArrestFinder — Enter your Torn API v2 key:\n(Leave blank and click OK to clear the saved key)',
+                current
+            );
+            // prompt returns null if cancelled — do nothing
+            if (input === null) return;
+            const trimmed = input.trim();
+            if (trimmed === '') {
+                deleteKey();
+                alert('ArrestFinder: API key cleared.');
+            } else {
+                saveKey(trimmed);
+                alert('ArrestFinder: API key saved successfully.');
+            }
+            // Refresh the status badge on the panel if it is currently visible
+            const statusEl = document.getElementById('af-status');
+            if (statusEl) updateKeyStatus(statusEl);
+        });
+
+        GM_registerMenuCommand('🗑️ Clear API Key', () => {
+            if (!confirm('ArrestFinder: Clear the saved API key?')) return;
+            deleteKey();
+            alert('ArrestFinder: API key cleared.');
+            const statusEl = document.getElementById('af-status');
+            if (statusEl) updateKeyStatus(statusEl);
+        });
+    }
+
+    // Updates the key-status element visibility.
+    // Hidden entirely when a key exists; only shown with a warning when missing.
+    function updateKeyStatus(statusEl) {
+        const key = getSavedKey();
+        if (key) {
+            statusEl.style.display = 'none';
+            statusEl.innerHTML = '';
+        } else {
+            statusEl.style.display = 'block';
+            statusEl.innerHTML = `<span style="color:#e74c3c;">✘ No API key set</span> — open the <strong>Tampermonkey menu</strong> to add one.`;
+        }
+    }
+
+    function buildUrl(userId, apiKey, timestamp) {
+        return `https://api.torn.com/v2/user/${userId}/personalstats?stat=${STATS_PARAM}&timestamp=${timestamp}&comment=${COMMENT}&key=${apiKey}`;
+    }
+
+    function parseStats(json) {
+        const out = {};
+        const list = json?.personalstats ?? [];
+        for (const item of list) {
+            out[item.name] = item.value;
+        }
+        return out;
+    }
+
+    function fetchGM(url) {
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url,
+                onload(r) {
+                    try { resolve(JSON.parse(r.responseText)); }
+                    catch (e) { reject(new Error('JSON parse error')); }
+                },
+                onerror(e) { reject(new Error('Network error')); },
+            });
+        });
+    }
+
+    function fmtNum(n) {
+        if (n == null) return '—';
+        return Number(n).toLocaleString();
+    }
+
+    // ─── Classification Logic ─────────────────────────────────────────────────
+    /**
+     * Final verdict is the WORSE of the two individual signal verdicts.
+     * Precedence (worst → best): bad > potential > good
+     *
+     * ── JAILED SIGNAL ────────────────────────────────────────────────────────
+     *   GOOD      → jailed value is identical across all three snapshots
+     *               (player has not been jailed at all during the full 3-month window)
+     *   POTENTIAL → jailed(now) === jailed(1mo) BUT differs from jailed(3mo)
+     *               (no new jails in the last month, but was jailed before that)
+     *   BAD       → jailed(now) !== jailed(1mo)
+     *               (player was jailed within the last month — actively getting caught)
+     *
+     * ── CRIMINAL OFFENSES SIGNAL ─────────────────────────────────────────────
+     *   Measures how many NEW offenses occurred in each window:
+     *     delta1mo = offenses(now) − offenses(1mo ago)   ← crimes in last month
+     *     delta3mo = offenses(now) − offenses(3mo ago)   ← crimes in last 3 months
+     *
+     *   GOOD      → delta1mo >= 1000 AND delta3mo >= 3000
+     *               (high, consistent criminal activity — very active target)
+     *   BAD       → delta1mo <  500  OR  delta3mo < 1500
+     *               (low activity in either window — target is dormant/inactive)
+     *   POTENTIAL → everything in between
+     *               (moderate activity; some risk the player may not be reliably active)
+     *
+     * ── COMBINED VERDICT ─────────────────────────────────────────────────────
+     *   The two signals are scored (good=2, potential=1, bad=0) and the lower
+     *   score wins, so a single BAD signal is enough to mark the target BAD.
+     *   A single POTENTIAL signal alongside a GOOD pulls the result to POTENTIAL.
+     *   Only when BOTH signals are GOOD is the final verdict GOOD.
+     */
+    const SCORE = { good: 2, potential: 1, bad: 0 };
+    const SCORE_TO_VERDICT = ['bad', 'potential', 'good']; // index = min score
+
+    function classifyJailed(jailNow, jailMonth1, jailMonth3) {
+        if (jailNow === jailMonth1 && jailNow === jailMonth3) return 'good';
+        if (jailNow === jailMonth1)                            return 'potential';
+        return 'bad';
+    }
+
+    function classifyOffenses(offNow, offMonth1, offMonth3) {
+        const delta1mo = offNow - offMonth1; // new crimes in last month
+        const delta3mo = offNow - offMonth3; // new crimes in last 3 months
+
+        if (delta1mo >= 1000 && delta3mo >= 3000) return 'good';
+        if (delta1mo <   500 || delta3mo <  1500) return 'bad';
+        return 'potential';
+    }
+
+    function classify(jailNow, jailMonth1, jailMonth3, offNow, offMonth1, offMonth3) {
+        const jailVerdict    = classifyJailed(jailNow, jailMonth1, jailMonth3);
+        const offenseVerdict = classifyOffenses(offNow, offMonth1, offMonth3);
+        // Take the worse (lower-scored) of the two signals
+        const minScore = Math.min(SCORE[jailVerdict], SCORE[offenseVerdict]);
+        return SCORE_TO_VERDICT[minScore];
+    }
+
+    const VERDICT = {
+        good:      { label: '✅ Good Arrest Target',      color: COLORS.good },
+        potential: { label: '⚠️ Potential Arrest Target', color: COLORS.potential },
+        bad:       { label: '❌ Bad Arrest Target',        color: COLORS.bad },
+    };
+
+    // ─── UI Builders ──────────────────────────────────────────────────────────
+    function injectStyles() {
+        const style = document.createElement('style');
+        style.textContent = `
+            #af-panel {
+                font-family: inherit;
+                font-size: 13px;
+                background: ${COLORS.bg};
+                border: 1px solid ${COLORS.border};
+                border-radius: 6px;
+                margin: 10px 0 0 0;
+                color: ${COLORS.text};
+                overflow: hidden;
+                width: 100%;
+                clear: both;
+                box-sizing: border-box;
+                display: block;
+            }
+            #af-panel .af-header {
+                background: ${COLORS.header};
+                padding: 8px 12px;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                border-bottom: 1px solid ${COLORS.border};
+                cursor: pointer;
+                user-select: none;
+            }
+            #af-panel .af-header-title {
+                font-weight: bold;
+                font-size: 13px;
+                letter-spacing: 0.4px;
+                color: ${COLORS.accent};
+                display: flex;
+                align-items: center;
+                gap: 6px;
+            }
+            #af-panel .af-toggle-icon {
+                font-size: 11px;
+                color: ${COLORS.muted};
+                transition: transform 0.2s;
+            }
+            #af-panel.af-collapsed .af-toggle-icon {
+                transform: rotate(-90deg);
+            }
+            #af-panel.af-collapsed #af-body {
+                display: none;
+            }
+            #af-body {
+                padding: 10px 12px;
+            }
+            .af-set-key-btn {
+                margin-left: 8px;
+                background: ${COLORS.accent};
+                color: #fff;
+                border: none;
+                padding: 3px 10px;
+                border-radius: 4px;
+                font-size: 12px;
+                font-weight: bold;
+                cursor: pointer;
+                vertical-align: middle;
+                transition: background 0.15s;
+            }
+            .af-set-key-btn:hover { background: #217dbb; }
+            #af-status {
+                color: ${COLORS.muted};
+                font-size: 12px;
+                margin-bottom: 8px;
+                min-height: 16px;
+                display: none;
+            }
+            #af-verdict-box {
+                display: none;
+                border-radius: 5px;
+                padding: 10px 14px;
+                margin-bottom: 10px;
+                font-weight: bold;
+                font-size: 15px;
+                text-align: center;
+                border: 2px solid transparent;
+            }
+            #af-table-wrap {
+                display: none;
+            }
+            .af-table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 12px;
+            }
+            .af-table th {
+                background: ${COLORS.bgAlt};
+                color: ${COLORS.muted};
+                font-weight: bold;
+                text-align: left;
+                padding: 5px 8px;
+                border-bottom: 1px solid ${COLORS.border};
+                text-transform: uppercase;
+                font-size: 10px;
+                letter-spacing: 0.5px;
+            }
+            .af-table td {
+                padding: 5px 8px;
+                border-bottom: 1px solid #2a2a2a;
+                color: ${COLORS.text};
+                vertical-align: middle;
+            }
+            .af-table tr:last-child td { border-bottom: none; }
+            .af-table tr:nth-child(even) td { background: ${COLORS.bgAlt}; }
+            .af-stat-name { font-weight: bold; color: #bbb; text-transform: capitalize; }
+            .af-highlight { color: #fff; font-weight: bold; }
+            .af-delta-up   { color: ${COLORS.bad};      font-size: 11px; }
+            .af-delta-down { color: ${COLORS.good};     font-size: 11px; }
+            .af-delta-zero { color: ${COLORS.muted};    font-size: 11px; }
+            .af-section-label {
+                font-size: 11px;
+                color: ${COLORS.muted};
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                margin: 8px 0 4px;
+                font-weight: bold;
+            }
+            .af-spinner {
+                display: inline-block;
+                width: 12px; height: 12px;
+                border: 2px solid #555;
+                border-top-color: ${COLORS.accent};
+                border-radius: 50%;
+                animation: af-spin 0.7s linear infinite;
+                vertical-align: middle;
+                margin-right: 6px;
+            }
+            @keyframes af-spin { to { transform: rotate(360deg); } }
+        `;
+        document.head.appendChild(style);
+    }
+
+    function buildPanel() {
+        const panel = document.createElement('div');
+        panel.id = 'af-panel';
+        panel.classList.add('af-collapsed');
+        panel.innerHTML = `
+            <div class="af-header" id="af-header">
+                <div class="af-header-title">
+                    🚔 ArrestFinder
+                </div>
+                <span class="af-toggle-icon">▼</span>
+            </div>
+            <div id="af-body">
+                <div id="af-status"></div>
+                <div id="af-verdict-box"></div>
+                <div id="af-table-wrap"></div>
+            </div>
+        `;
+        return panel;
+    }
+
+    // Delta helpers
+    function delta(now, then) {
+        if (now == null || then == null) return '';
+        const d = now - then;
+        if (d === 0) return `<span class="af-delta-zero">±0</span>`;
+        if (d > 0)   return `<span class="af-delta-up">+${fmtNum(d)}</span>`;
+        return `<span class="af-delta-down">${fmtNum(d)}</span>`;
+    }
+
+    function buildResultTable(statsNow, statsMonth1, statsMonth3) {
+        const STAT_ORDER = [
+            'jailed',
+            'criminaloffenses',
+            'vandalism',
+            'theft',
+            'counterfeiting',
+            'fraud',
+            'illicitservices',
+            'cybercrime',
+            'extortion',
+            'illegalproduction',
+        ];
+
+        const LABELS = {
+            jailed:              'Times Jailed',
+            criminaloffenses:    'Criminal Offenses',
+            vandalism:           'Vandalism',
+            theft:               'Theft',
+            counterfeiting:      'Counterfeiting',
+            fraud:               'Fraud',
+            illicitservices:     'Illicit Services',
+            cybercrime:          'Cybercrime',
+            extortion:           'Extortion',
+            illegalproduction:   'Illegal Production',
+        };
+
+        let rows = '';
+        for (const stat of STAT_ORDER) {
+            const now    = statsNow[stat];
+            const m1     = statsMonth1[stat];
+            const m3     = statsMonth3[stat];
+            const isJail = stat === 'jailed';
+            rows += `
+                <tr>
+                    <td class="af-stat-name${isJail ? ' af-highlight' : ''}">${LABELS[stat] ?? stat}</td>
+                    <td class="${isJail ? 'af-highlight' : ''}">${fmtNum(now)}</td>
+                    <td>${fmtNum(m1)} ${delta(now, m1)}</td>
+                    <td>${fmtNum(m3)} ${delta(now, m3)}</td>
+                </tr>
+            `;
+        }
+
+        return `
+            <div class="af-section-label">Stat Breakdown</div>
+            <table class="af-table">
+                <thead>
+                    <tr>
+                        <th>Stat</th>
+                        <th>Now</th>
+                        <th>1 Month Ago</th>
+                        <th>3 Months Ago</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+        `;
+    }
+
+    // ─── Main Logic ───────────────────────────────────────────────────────────
+    async function runAnalysis(userId, apiKey, statusEl, verdictBox, tableWrap) {
+        tableWrap.style.display = 'none';
+        verdictBox.style.display = 'none';
+
+        const steps = [
+            { label: 'Fetching current stats…',          ts: nowTs() },
+            { label: 'Fetching stats from 1 month ago…', ts: oneMonthAgoTs() },
+            { label: 'Fetching stats from 3 months ago…', ts: threeMonthAgoTs() },
+        ];
+
+        const results = [];
+        for (const step of steps) {
+            statusEl.style.display = 'block';
+            statusEl.innerHTML = `<span class="af-spinner"></span>${step.label}`;
+            try {
+                const url  = buildUrl(userId, apiKey, step.ts);
+                const json = await fetchGM(url);
+                if (json.error) {
+                    throw new Error(`API error ${json.error.code}: ${json.error.error}`);
+                }
+                results.push(parseStats(json));
+            } catch (err) {
+                statusEl.textContent = `❌ ${err.message}`;
+                return;
+            }
+        }
+
+        // Hide status now that fetching is done
+        statusEl.style.display = 'none';
+        statusEl.innerHTML = '';
+
+        const [statsNow, statsMonth1, statsMonth3] = results;
+        const jailNow    = statsNow['jailed']             ?? 0;
+        const jailMonth1 = statsMonth1['jailed']          ?? 0;
+        const jailMonth3 = statsMonth3['jailed']          ?? 0;
+        const offNow     = statsNow['criminaloffenses']    ?? 0;
+        const offMonth1  = statsMonth1['criminaloffenses'] ?? 0;
+        const offMonth3  = statsMonth3['criminaloffenses'] ?? 0;
+
+        const verdict = classify(jailNow, jailMonth1, jailMonth3, offNow, offMonth1, offMonth3);
+        const { label, color } = VERDICT[verdict];
+
+        // Show verdict box
+        verdictBox.style.display = 'block';
+        verdictBox.style.background = color + '22';
+        verdictBox.style.borderColor = color;
+        verdictBox.style.color = color;
+
+        verdictBox.innerHTML = label;
+
+        // Show stat table
+        tableWrap.style.display = 'block';
+        tableWrap.innerHTML = buildResultTable(statsNow, statsMonth1, statsMonth3);
+    }
+
+    // ─── Injection ────────────────────────────────────────────────────────────
+    function injectPanel(userId) {
+        // Target exactly: <div class="content-title m-bottom10">
+        const container = document.querySelector('div.content-title.m-bottom10');
+        if (!container) {
+            console.warn('[ArrestFinder] Could not find div.content-title.m-bottom10 — aborting injection.');
+            return;
+        }
+
+        // Guard against double-injection on SPA navigations
+        if (document.getElementById('af-panel')) return;
+
+        injectStyles();
+        const panel = buildPanel();
+        container.appendChild(panel);
+
+        const header     = panel.querySelector('#af-header');
+        const statusEl   = panel.querySelector('#af-status');
+        const verdictBox = panel.querySelector('#af-verdict-box');
+        const tableWrap  = panel.querySelector('#af-table-wrap');
+
+        // Collapse toggle
+        header.addEventListener('click', () => {
+            panel.classList.toggle('af-collapsed');
+        });
+
+        const key = getSavedKey();
+        if (!key) {
+            // No key — show the warning with an inline set-key button
+            statusEl.style.display = 'block';
+            statusEl.innerHTML = `
+                <span style="color:#e74c3c;">⚠ API Key Missing</span>
+                <button id="af-set-key-btn" class="af-set-key-btn">Set API Key</button>
+            `;
+            document.getElementById('af-set-key-btn').addEventListener('click', () => {
+                const input = prompt('ArrestFinder — Enter your Torn API v2 key:');
+                if (input === null) return; // cancelled
+                const trimmed = input.trim();
+                if (!trimmed) return;
+                saveKey(trimmed);
+                // Remove panel and re-inject so analysis runs fresh with the new key
+                panel.remove();
+                injectPanel(userId);
+            });
+            return;
+        }
+
+        // Key present — run immediately, status stays hidden
+        runAnalysis(userId, key, statusEl, verdictBox, tableWrap);
+    }
+
+    // ─── Entry Point ──────────────────────────────────────────────────────────
+    function init() {
+        // Register Tampermonkey menu commands regardless of which page we're on
+        // so the user can set/clear their key from any Torn page.
+        registerMenuCommands();
+
+        const userId = getTargetUserId();
+        if (!userId) return; // Not on a profile page
+
+        // Poll until div.content-title.m-bottom10 is present in the DOM.
+        const tryInject = () => {
+            const target = document.querySelector('div.content-title.m-bottom10');
+            if (target) {
+                injectPanel(userId);
+            } else {
+                setTimeout(tryInject, 300);
+            }
+        };
+
+        tryInject();
+    }
+
+    // ─── Wait for DOM ─────────────────────────────────────────────────────────
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', init);
+    } else {
+        init();
+    }
+
+})();
