@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ArrestFinder
 // @namespace    https://www.torn.com/
-// @version      1.0.3
+// @version      1.0.4
 // @description  Analyzes a player's jailed & crime stats across three time windows to classify them as a Good, Potential, or Bad arrest target.
 // @author       ArrestFinder
 // @match        https://www.torn.com/profiles.php*
@@ -228,7 +228,6 @@
     };
 
     // ─── Badge Builder ────────────────────────────────────────────────────────
-    // A small inline indicator injected next to #ff-scouter-run-once that shows
     // the verdict immediately without needing the panel to be expanded.
     function buildBadge() {
         const badge = document.createElement('div');
@@ -245,7 +244,7 @@
         const badge = buildBadge();
             const container = document.querySelector('div.content-title.m-bottom10');
             if (container && container.parentNode) {
-                container.parentNode.insertBefore(badge, container);
+                container.parentNode.insertAfter(badge, container);
         }
         return badge;
     }
