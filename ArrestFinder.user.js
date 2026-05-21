@@ -2,7 +2,7 @@
 // @name         ArrestFinder
 // @author       Sin_Vida (Craezin)
 // @namespace    https://www.torn.com/
-// @version      1.1.2
+// @version      1.1.3
 // @description  Analyzes a player's jailed & crime stats across three time windows to classify them as a Good, Potential, or Bad arrest target.
 // @author       ArrestFinder
 // @match        https://www.torn.com/profiles.php*
@@ -183,9 +183,9 @@
      *     delta1mo = offenses(now) − offenses(1mo ago)   ← crimes in last month
      *     delta2mo = offenses(now) − offenses(2mo ago)   ← crimes in last 2 months
      *
-     *   GOOD      → delta1mo >= 1000 AND delta2mo >= 3000
+     *   GOOD      → delta1mo >= 1000 AND delta2mo >= 2000
      *               (high, consistent criminal activity — very active target)
-     *   BAD       → delta1mo <  500  OR  delta2mo < 1500
+     *   BAD       → delta1mo <  500  OR  delta2mo < 1000
      *               (low activity in either window — target is dormant/inactive)
      *   POTENTIAL → everything in between
      *               (moderate activity; some risk the player may not be reliably active)
@@ -209,8 +209,8 @@
         const delta1mo = offNow - offMonth1; // new crimes in last month
         const delta2mo = offNow - offMonth2; // new crimes in last 2 months
 
-        if (delta1mo >= 1000 && delta2mo >= 3000) return 'good';
-        if (delta1mo <   500 || delta2mo <  1500) return 'bad';
+        if (delta1mo >= 1000 && delta2mo >= 2000) return 'good';
+        if (delta1mo <   500 || delta2mo <  1000) return 'bad';
         return 'potential';
     }
 
