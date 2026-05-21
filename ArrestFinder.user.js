@@ -5,8 +5,8 @@
 // @description  Analyzes a player's jailed & crime stats across three time windows to classify them as a Good, Potential, or Bad arrest target.
 // @author       ArrestFinder
 // @match        https://www.torn.com/profiles.php*
-// @downloadURL https://github.com/Craezin/ArrestFinder/raw/refs/heads/main/ArrestFinder.user.js
-// @updateURL https://github.com/Craezin/ArrestFinder/raw/refs/heads/main/ArrestFinder.user.js
+// @downloadURL  https://github.com/Craezin/ArrestFinder/raw/refs/heads/main/ArrestFinder.user.js
+// @updateURL    https://github.com/Craezin/ArrestFinder/raw/refs/heads/main/ArrestFinder.user.js
 // @grant        GM_getValue
 // @grant        GM_setValue
 // @grant        GM_xmlhttpRequest
@@ -47,20 +47,43 @@
     function oneMonthAgoTs() { return nowTs() - 30 * 24 * 60 * 60; }
     function threeMonthAgoTs() { return nowTs() - 90 * 24 * 60 * 60; }
 
-    function getSavedKey() { return GM_getValue(SCRIPT_KEY, ''); }
-    function saveKey(k)    { GM_setValue(SCRIPT_KEY, k.trim()); }
-    function deleteKey()   { GM_deleteValue(SCRIPT_KEY); }
+    // ─── GM_* Compatibility Shims ─────────────────────────────────────────────
+    // TornPDA and other non-Tampermonkey engines may not support every GM_* API.
+    // These wrappers fall back gracefully rather than throwing ReferenceErrors.
+
+    const HAS_GM_GET    = typeof GM_getValue          === 'function';
+    const HAS_GM_SET    = typeof GM_setValue          === 'function';
+    const HAS_GM_DEL    = typeof GM_deleteValue       === 'function';
+    const HAS_GM_MENU   = typeof GM_registerMenuCommand === 'function';
+    const HAS_GM_XHR    = typeof GM_xmlhttpRequest    === 'function';
+
+    // Persistent storage: falls back to sessionStorage when GM storage is absent
+    function getSavedKey() {
+        if (HAS_GM_GET) return GM_getValue(SCRIPT_KEY, '');
+        try { return sessionStorage.getItem(SCRIPT_KEY) || ''; } catch { return ''; }
+    }
+    function saveKey(k) {
+        const v = k.trim();
+        if (HAS_GM_SET) { GM_setValue(SCRIPT_KEY, v); return; }
+        try { sessionStorage.setItem(SCRIPT_KEY, v); } catch { /* silent */ }
+    }
+    function deleteKey() {
+        if (HAS_GM_DEL) { GM_deleteValue(SCRIPT_KEY); return; }
+        try { sessionStorage.removeItem(SCRIPT_KEY); } catch { /* silent */ }
+    }
 
     // ─── Tampermonkey Menu Commands ───────────────────────────────────────────
+    // Only registered when the engine supports GM_registerMenuCommand.
     function registerMenuCommands() {
+        if (!HAS_GM_MENU) return; // silently skip on TornPDA / unsupported engines
+
         GM_registerMenuCommand('🔑 Set API Key', () => {
             const current = getSavedKey();
             const input = prompt(
                 'ArrestFinder — Enter your Torn API v2 key:\n(Leave blank and click OK to clear the saved key)',
                 current
             );
-            // prompt returns null if cancelled — do nothing
-            if (input === null) return;
+            if (input === null) return; // cancelled
             const trimmed = input.trim();
             if (trimmed === '') {
                 deleteKey();
@@ -69,7 +92,6 @@
                 saveKey(trimmed);
                 alert('ArrestFinder: API key saved successfully.');
             }
-            // Refresh the status badge on the panel if it is currently visible
             const statusEl = document.getElementById('af-status');
             if (statusEl) updateKeyStatus(statusEl);
         });
@@ -92,7 +114,12 @@
             statusEl.innerHTML = '';
         } else {
             statusEl.style.display = 'block';
-            statusEl.innerHTML = `<span style="color:#e74c3c;">✘ No API key set</span> — open the <strong>Tampermonkey menu</strong> to add one.`;
+            // On platforms without a Tampermonkey menu, the inline Set Key button
+            // is the only entry point — no need to mention the TM menu.
+            const hint = HAS_GM_MENU
+                ? ' — open the <strong>Tampermonkey menu</strong> to add one.'
+                : '';
+            statusEl.innerHTML = `<span style="color:#e74c3c;">⚠ API Key Missing</span>${hint}`;
         }
     }
 
@@ -110,16 +137,25 @@
     }
 
     function fetchGM(url) {
-        return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: 'GET',
-                url,
-                onload(r) {
-                    try { resolve(JSON.parse(r.responseText)); }
-                    catch (e) { reject(new Error('JSON parse error')); }
-                },
-                onerror(e) { reject(new Error('Network error')); },
+        // Use GM_xmlhttpRequest when available (bypasses CORS on Tampermonkey).
+        // Fall back to native fetch for engines like TornPDA that handle CORS
+        // themselves at the app level.
+        if (HAS_GM_XHR) {
+            return new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url,
+                    onload(r) {
+                        try { resolve(JSON.parse(r.responseText)); }
+                        catch (e) { reject(new Error('JSON parse error')); }
+                    },
+                    onerror() { reject(new Error('Network error')); },
+                });
             });
+        }
+        return fetch(url).then(r => {
+            if (!r.ok) throw new Error(`HTTP ${r.status}`);
+            return r.json();
         });
     }
 
