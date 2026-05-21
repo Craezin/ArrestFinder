@@ -2,7 +2,7 @@
 // @name         ArrestFinder
 // @author       Sin_Vida (Craezin)
 // @namespace    https://www.torn.com/
-// @version      1.1.3
+// @version      1.1.4
 // @description  Analyzes a player's jailed & crime stats across three time windows to classify them as a Good, Potential, or Bad arrest target.
 // @author       ArrestFinder
 // @match        https://www.torn.com/profiles.php*
@@ -394,9 +394,19 @@
             .af-table tr:nth-child(even) td { background: ${COLORS.bgAlt}; }
             .af-stat-name { font-weight: bold; color: #bbb; text-transform: capitalize; }
             .af-highlight { color: #fff; font-weight: bold; }
-            .af-delta-up   { color: ${COLORS.good};      font-size: 11px; }
-            .af-delta-down { color: ${COLORS.bad};     font-size: 11px; }
-            .af-delta-zero { color: ${COLORS.muted};    font-size: 11px; }
+            /* Tiered delta colours for crime stats (1mo window) */
+            .af-delta-up-good      { color: ${COLORS.good};      font-size: 11px; } /* 1000+   */
+            .af-delta-up-potential { color: ${COLORS.potential};  font-size: 11px; } /* 500-999 */
+            .af-delta-up-bad       { color: ${COLORS.bad};        font-size: 11px; } /* 1-499   */
+            /* Tiered delta colours for crime stats (2mo window) */
+            .af-delta-up-good-2mo      { color: ${COLORS.good};      font-size: 11px; } /* 2000+     */
+            .af-delta-up-potential-2mo { color: ${COLORS.potential};  font-size: 11px; } /* 1000-1999 */
+            .af-delta-up-bad-2mo       { color: ${COLORS.bad};        font-size: 11px; } /* 1-999     */
+            /* Jailed delta — fixed colours, direction only */
+            .af-delta-jail-up   { color: ${COLORS.bad};    font-size: 11px; }
+            .af-delta-jail-down { color: ${COLORS.good};   font-size: 11px; }
+            /* Shared */
+            .af-delta-zero { color: ${COLORS.muted};  font-size: 11px; }
             .af-section-label {
                 font-size: 11px;
                 color: ${COLORS.muted};
@@ -440,13 +450,34 @@
         return panel;
     }
 
-    // Delta helpers
-    function delta(now, then) {
+    // Delta for Times Jailed — colour by direction only (up=bad, down=good)
+    function deltaJail(now, then) {
         if (now == null || then == null) return '';
         const d = now - then;
         if (d === 0) return `<span class="af-delta-zero">±0</span>`;
-        if (d > 0)   return `<span class="af-delta-up">+${fmtNum(d)}</span>`;
-        return `<span class="af-delta-down">${fmtNum(d)}</span>`;
+        if (d > 0)   return `<span class="af-delta-jail-up">+${fmtNum(d)}</span>`;
+        return `<span class="af-delta-jail-down">${fmtNum(d)}</span>`;
+    }
+
+    // Delta for crime stats — tiered colour based on window (1mo vs 2mo) and magnitude
+    function deltaCrime(now, then, window) {
+        if (now == null || then == null) return '';
+        const d = now - then;
+        if (d === 0) return `<span class="af-delta-zero">±0</span>`;
+
+        let cls;
+        if (window === '1mo') {
+            // 1–499 → bad, 500–999 → potential, 1000+ → good
+            if (d >= 1000)     cls = 'af-delta-up-good';
+            else if (d >= 500) cls = 'af-delta-up-potential';
+            else               cls = 'af-delta-up-bad';
+        } else {
+            // 2mo window: 1–999 → bad, 1000–1999 → potential, 2000+ → good
+            if (d >= 2000)      cls = 'af-delta-up-good-2mo';
+            else if (d >= 1000) cls = 'af-delta-up-potential-2mo';
+            else                cls = 'af-delta-up-bad-2mo';
+        }
+        return `<span class="${cls}">+${fmtNum(d)}</span>`;
     }
 
     function buildResultTable(statsNow, statsMonth1, statsMonth3) {
@@ -482,12 +513,14 @@
             const m1     = statsMonth1[stat];
             const m3     = statsMonth3[stat];
             const isJail = stat === 'jailed';
+            const d1 = isJail ? deltaJail(now, m1)            : deltaCrime(now, m1, '1mo');
+            const d2 = isJail ? deltaJail(now, m3)            : deltaCrime(now, m3, '2mo');
             rows += `
                 <tr>
                     <td class="af-stat-name${isJail ? ' af-highlight' : ''}">${LABELS[stat] ?? stat}</td>
                     <td class="${isJail ? 'af-highlight' : ''}">${fmtNum(now)}</td>
-                    <td>${fmtNum(m1)} ${delta(now, m1)}</td>
-                    <td>${fmtNum(m3)} ${delta(now, m3)}</td>
+                    <td>${fmtNum(m1)} ${d1}</td>
+                    <td>${fmtNum(m3)} ${d2}</td>
                 </tr>
             `;
         }
