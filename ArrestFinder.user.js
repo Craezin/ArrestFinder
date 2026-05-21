@@ -394,8 +394,8 @@
             .af-table tr:nth-child(even) td { background: ${COLORS.bgAlt}; }
             .af-stat-name { font-weight: bold; color: #bbb; text-transform: capitalize; }
             .af-highlight { color: #fff; font-weight: bold; }
-            .af-delta-up   { color: ${COLORS.bad};      font-size: 11px; }
-            .af-delta-down { color: ${COLORS.good};     font-size: 11px; }
+            .af-delta-up   { color: ${COLORS.good};      font-size: 11px; }
+            .af-delta-down { color: ${COLORS.bad};     font-size: 11px; }
             .af-delta-zero { color: ${COLORS.muted};    font-size: 11px; }
             .af-section-label {
                 font-size: 11px;
