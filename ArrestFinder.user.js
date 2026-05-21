@@ -1,8 +1,7 @@
 // ==UserScript==
 // @name         ArrestFinder
-// @author       Sin_Vida (Craezin)
 // @namespace    https://www.torn.com/
-// @version      1.0.2
+// @version      1.0.3
 // @description  Analyzes a player's jailed & crime stats across three time windows to classify them as a Good, Potential, or Bad arrest target.
 // @author       ArrestFinder
 // @match        https://www.torn.com/profiles.php*
@@ -228,6 +227,43 @@
         bad:       { label: '❌ Bad Arrest Target',        color: COLORS.bad },
     };
 
+    // ─── Badge Builder ────────────────────────────────────────────────────────
+    // A small inline indicator injected next to #ff-scouter-run-once that shows
+    // the verdict immediately without needing the panel to be expanded.
+    function buildBadge() {
+        const badge = document.createElement('div');
+        badge.id = 'af-badge';
+        badge.style.display = 'none'; // hidden until verdict is ready
+        badge.innerHTML = `
+            <span class="af-badge-label">Arrest:</span><span class="af-badge-pill">…</span>
+        `;
+        return badge;
+    }
+
+    function injectBadge() {
+        if (document.getElementById('af-badge')) return null;
+        const badge = buildBadge();
+            const container = document.querySelector('div.content-title.m-bottom10');
+            if (container && container.parentNode) {
+                container.parentNode.insertBefore(badge, container);
+        }
+        return badge;
+    }
+
+    function updateBadge(badge, verdict) {
+        if (!badge) return;
+        const BADGE_LABELS = {
+            good:      { text: 'Good Arrest',      bg: COLORS.good },
+            potential: { text: 'Potential Arrest',  bg: COLORS.potential },
+            bad:       { text: 'Bad Arrest',        bg: COLORS.bad },
+        };
+        const { text, bg } = BADGE_LABELS[verdict];
+        const pill = badge.querySelector('.af-badge-pill');
+        pill.textContent = text;
+        pill.style.background = bg;
+        badge.style.display = 'block';
+    }
+
     // ─── UI Builders ──────────────────────────────────────────────────────────
     function injectStyles() {
         const style = document.createElement('style');
@@ -278,6 +314,26 @@
             }
             #af-body {
                 padding: 10px 12px;
+            }
+            #af-badge {
+                display: inline-block;
+                clear: both;
+                margin: 5px 0;
+                font-size: 12px;
+                font-weight: bold;
+                font-family: inherit;
+            }
+            #af-badge .af-badge-label {
+                font-weight: bold;
+                margin-right: 6px;
+            }
+            #af-badge .af-badge-pill {
+                display: inline-block;
+                color: white;
+                font-weight: bold;
+                padding: 2px 6px;
+                border-radius: 4px;
+                font-size: 12px;
             }
             .af-set-key-btn {
                 margin-left: 8px;
@@ -454,7 +510,7 @@
     }
 
     // ─── Main Logic ───────────────────────────────────────────────────────────
-    async function runAnalysis(userId, apiKey, statusEl, verdictBox, tableWrap) {
+    async function runAnalysis(userId, apiKey, statusEl, verdictBox, tableWrap, badge) {
         tableWrap.style.display = 'none';
         verdictBox.style.display = 'none';
 
@@ -496,6 +552,9 @@
         const verdict = classify(jailNow, jailMonth1, jailMonth3, offNow, offMonth1, offMonth3);
         const { label, color } = VERDICT[verdict];
 
+        // Update the standalone badge
+        updateBadge(badge, verdict);
+
         // Show verdict box
         verdictBox.style.display = 'block';
         verdictBox.style.background = color + '22';
@@ -524,6 +583,9 @@
         injectStyles();
         const panel = buildPanel();
         container.appendChild(panel);
+
+        // Inject the standalone badge near #ff-scouter-run-once
+        const badge = injectBadge();
 
         const header     = panel.querySelector('#af-header');
         const statusEl   = panel.querySelector('#af-status');
@@ -557,7 +619,7 @@
         }
 
         // Key present — run immediately, status stays hidden
-        runAnalysis(userId, key, statusEl, verdictBox, tableWrap);
+        runAnalysis(userId, key, statusEl, verdictBox, tableWrap, badge);
     }
 
     // ─── Entry Point ──────────────────────────────────────────────────────────
