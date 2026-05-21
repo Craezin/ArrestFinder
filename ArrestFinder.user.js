@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ArrestFinder
 // @namespace    https://www.torn.com/
-// @version      1.0.0
+// @version      1.0.1
 // @description  Analyzes a player's jailed & crime stats across three time windows to classify them as a Good, Potential, or Bad arrest target.
 // @author       ArrestFinder
 // @match        https://www.torn.com/profiles.php*
