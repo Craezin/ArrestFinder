@@ -2,7 +2,7 @@
 // @name         ArrestFinder
 // @author       Sin_Vida (Craezin)
 // @namespace    https://www.torn.com/
-// @version      1.1.1
+// @version      1.1.2
 // @description  Analyzes a player's jailed & crime stats across three time windows to classify them as a Good, Potential, or Bad arrest target.
 // @author       ArrestFinder
 // @match        https://www.torn.com/profiles.php*
@@ -46,7 +46,7 @@
 
     function nowTs()         { return Math.floor(Date.now() / 1000); }
     function oneMonthAgoTs() { return nowTs() - 30 * 24 * 60 * 60; }
-    function threeMonthAgoTs() { return nowTs() - 90 * 24 * 60 * 60; }
+    function twoMonthAgoTs() { return nowTs() - 60 * 24 * 60 * 60; }
 
     // ─── GM_* Compatibility Shims ─────────────────────────────────────────────
     // TornPDA and other non-Tampermonkey engines may not support every GM_* API.
@@ -181,11 +181,11 @@
      * ── CRIMINAL OFFENSES SIGNAL ─────────────────────────────────────────────
      *   Measures how many NEW offenses occurred in each window:
      *     delta1mo = offenses(now) − offenses(1mo ago)   ← crimes in last month
-     *     delta3mo = offenses(now) − offenses(3mo ago)   ← crimes in last 3 months
+     *     delta2mo = offenses(now) − offenses(2mo ago)   ← crimes in last 2 months
      *
-     *   GOOD      → delta1mo >= 1000 AND delta3mo >= 3000
+     *   GOOD      → delta1mo >= 1000 AND delta2mo >= 3000
      *               (high, consistent criminal activity — very active target)
-     *   BAD       → delta1mo <  500  OR  delta3mo < 1500
+     *   BAD       → delta1mo <  500  OR  delta2mo < 1500
      *               (low activity in either window — target is dormant/inactive)
      *   POTENTIAL → everything in between
      *               (moderate activity; some risk the player may not be reliably active)
@@ -199,24 +199,24 @@
     const SCORE = { good: 2, potential: 1, bad: 0 };
     const SCORE_TO_VERDICT = ['bad', 'potential', 'good']; // index = min score
 
-    function classifyJailed(jailNow, jailMonth1, jailMonth3) {
-        if (jailNow === jailMonth1 && jailNow === jailMonth3) return 'good';
+    function classifyJailed(jailNow, jailMonth1, jailMonth2) {
+        if (jailNow === jailMonth1 && jailNow === jailMonth2) return 'good';
         if (jailNow === jailMonth1)                            return 'potential';
         return 'bad';
     }
 
-    function classifyOffenses(offNow, offMonth1, offMonth3) {
+    function classifyOffenses(offNow, offMonth1, offMonth2) {
         const delta1mo = offNow - offMonth1; // new crimes in last month
-        const delta3mo = offNow - offMonth3; // new crimes in last 3 months
+        const delta2mo = offNow - offMonth2; // new crimes in last 2 months
 
-        if (delta1mo >= 1000 && delta3mo >= 3000) return 'good';
-        if (delta1mo <   500 || delta3mo <  1500) return 'bad';
+        if (delta1mo >= 1000 && delta2mo >= 3000) return 'good';
+        if (delta1mo <   500 || delta2mo <  1500) return 'bad';
         return 'potential';
     }
 
-    function classify(jailNow, jailMonth1, jailMonth3, offNow, offMonth1, offMonth3) {
-        const jailVerdict    = classifyJailed(jailNow, jailMonth1, jailMonth3);
-        const offenseVerdict = classifyOffenses(offNow, offMonth1, offMonth3);
+    function classify(jailNow, jailMonth1, jailMonth2, offNow, offMonth1, offMonth2) {
+        const jailVerdict    = classifyJailed(jailNow, jailMonth1, jailMonth2);
+        const offenseVerdict = classifyOffenses(offNow, offMonth1, offMonth2);
         // Take the worse (lower-scored) of the two signals
         const minScore = Math.min(SCORE[jailVerdict], SCORE[offenseVerdict]);
         return SCORE_TO_VERDICT[minScore];
@@ -500,7 +500,7 @@
                         <th>Stat</th>
                         <th>Now</th>
                         <th>1 Month Ago</th>
-                        <th>3 Months Ago</th>
+                        <th>2 Months Ago</th>
                     </tr>
                 </thead>
                 <tbody>${rows}</tbody>
@@ -516,7 +516,7 @@
         const steps = [
             { label: 'Fetching current stats…',          ts: nowTs() },
             { label: 'Fetching stats from 1 month ago…', ts: oneMonthAgoTs() },
-            { label: 'Fetching stats from 3 months ago…', ts: threeMonthAgoTs() },
+            { label: 'Fetching stats from 2 months ago…', ts: twoMonthAgoTs() },
         ];
 
         const results = [];
@@ -543,12 +543,12 @@
         const [statsNow, statsMonth1, statsMonth3] = results;
         const jailNow    = statsNow['jailed']             ?? 0;
         const jailMonth1 = statsMonth1['jailed']          ?? 0;
-        const jailMonth3 = statsMonth3['jailed']          ?? 0;
+        const jailMonth2 = statsMonth3['jailed']          ?? 0;
         const offNow     = statsNow['criminaloffenses']    ?? 0;
         const offMonth1  = statsMonth1['criminaloffenses'] ?? 0;
-        const offMonth3  = statsMonth3['criminaloffenses'] ?? 0;
+        const offMonth2  = statsMonth3['criminaloffenses'] ?? 0;
 
-        const verdict = classify(jailNow, jailMonth1, jailMonth3, offNow, offMonth1, offMonth3);
+        const verdict = classify(jailNow, jailMonth1, jailMonth2, offNow, offMonth1, offMonth2);
         const { label, color } = VERDICT[verdict];
 
         // Update the standalone badge
