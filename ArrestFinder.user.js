@@ -78,10 +78,10 @@
     function registerMenuCommands() {
         if (!HAS_GM_MENU) return; // silently skip on TornPDA / unsupported engines
 
-        GM_registerMenuCommand('🔑 Set API Key', () => {
+        GM_registerMenuCommand('Set API Key', () => {
             const current = getSavedKey();
             const input = prompt(
-                'ArrestFinder — Enter your Torn API v2 key:\n(Leave blank and click OK to clear the saved key)',
+                'ArrestFinder — Enter your Torn API v2 key: ',
                 current
             );
             if (input === null) return; // cancelled
@@ -97,7 +97,7 @@
             if (statusEl) updateKeyStatus(statusEl);
         });
 
-        GM_registerMenuCommand('🗑️ Clear API Key', () => {
+        GM_registerMenuCommand('Clear API Key', () => {
             if (!confirm('ArrestFinder: Clear the saved API key?')) return;
             deleteKey();
             alert('ArrestFinder: API key cleared.');
@@ -200,8 +200,8 @@
     const SCORE_TO_VERDICT = ['bad', 'potential', 'good']; // index = min score
 
     function classifyJailed(jailNow, jailMonth1, jailMonth2) {
-        if (jailNow === jailMonth1 && jailNow === jailMonth2) return 'good';
-        if (jailNow === jailMonth1)                            return 'potential';
+        if (jailNow === jailMonth2) return 'good';
+        if (jailNow === jailMonth1) return 'potential';
         return 'bad';
     }
 
