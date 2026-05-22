@@ -2,7 +2,7 @@
 // @name         ArrestFinder
 // @author       Sin_Vida (Craezin)
 // @namespace    https://www.torn.com/
-// @version      1.1.6
+// @version      1.1.7
 // @description  Analyzes a player's jailed & crime stats across three time windows to classify them as a Good, Potential, or Bad arrest target.
 // @author       ArrestFinder
 // @match        https://www.torn.com/profiles.php*
@@ -137,10 +137,14 @@
         return out;
     }
 
+    // Guard against TornPDA's injection wrapper calling document.currentScript
+    // in a null context — safe no-op if it doesn't exist.
+    if (typeof document.currentScript === 'undefined') {
+        Object.defineProperty(document, 'currentScript', { value: null, configurable: true });
+    }
+
     function fetchGM(url) {
         // Use GM_xmlhttpRequest when available (bypasses CORS on Tampermonkey).
-        // Fall back to native fetch for engines like TornPDA that handle CORS
-        // themselves at the app level.
         if (HAS_GM_XHR) {
             return new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
@@ -154,9 +158,23 @@
                 });
             });
         }
-        return fetch(url).then(r => {
-            if (!r.ok) throw new Error(`HTTP ${r.status}`);
-            return r.json();
+        // Fallback: use XMLHttpRequest instead of fetch() — TornPDA blocks
+        // cross-origin fetch() but allows XHR through its internal handler.
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('GET', url, true);
+            xhr.onload = () => {
+                if (xhr.status >= 200 && xhr.status < 300) {
+                    try { resolve(JSON.parse(xhr.responseText)); }
+                    catch (e) { reject(new Error('JSON parse error')); }
+                } else {
+                    reject(new Error(`HTTP ${xhr.status}`));
+                }
+            };
+            xhr.onerror = () => reject(new Error('Network error'));
+            xhr.ontimeout = () => reject(new Error('Request timed out'));
+            xhr.timeout = 15000;
+            xhr.send();
         });
     }
 
@@ -180,12 +198,12 @@
      *
      * ── CRIMINAL OFFENSES SIGNAL ─────────────────────────────────────────────
      *   Measures how many NEW offenses occurred in each window:
-     *     delta1mo = offenses(now) − offenses(1mo ago)   ← crimes in last month
-     *     delta2mo = offenses(now) − offenses(2mo ago)   ← crimes in last 2 months
+     *     delta2wk = offenses(now) − offenses(2 weeks ago)  ← crimes in last 2 weeks
+     *     delta1mo = offenses(now) − offenses(1 month ago)  ← crimes in last month
      *
-     *   GOOD      → delta1mo >= 1000 AND delta2mo >= 2000
+     *   GOOD      → delta2wk >= 500  AND delta1mo >= 1000
      *               (high, consistent criminal activity — very active target)
-     *   BAD       → delta1mo <  500  OR  delta2mo < 1000
+     *   BAD       → delta2wk <  250  OR  delta1mo <   500
      *               (low activity in either window — target is dormant/inactive)
      *   POTENTIAL → everything in between
      *               (moderate activity; some risk the player may not be reliably active)
@@ -199,24 +217,24 @@
     const SCORE = { good: 2, potential: 1, bad: 0 };
     const SCORE_TO_VERDICT = ['bad', 'potential', 'good']; // index = min score
 
-    function classifyJailed(jailNow, jailMonth1, jailMonth2) {
-        if (jailNow === jailMonth1 && jailNow === jailMonth2) return 'good';
-        if (jailNow === jailMonth1)                            return 'potential';
+    function classifyJailed(jailNow, jailWeeks2, jailMonth1) {
+        if (jailNow === jailWeeks2 && jailNow === jailMonth1) return 'good';
+        if (jailNow === jailWeeks2)                           return 'potential';
         return 'bad';
     }
 
-    function classifyOffenses(offNow, offMonth1, offMonth2) {
+    function classifyOffenses(offNow, offWeeks2, offMonth1) {
+        const delta2wk = offNow - offWeeks2; // new crimes in last 2 weeks
         const delta1mo = offNow - offMonth1; // new crimes in last month
-        const delta2mo = offNow - offMonth2; // new crimes in last 2 months
 
-        if (delta1mo >= 1000 && delta2mo >= 2000) return 'good';
-        if (delta1mo <   500 || delta2mo <  1000) return 'bad';
+        if (delta2wk >= 500  && delta1mo >= 1000) return 'good';
+        if (delta2wk <  250  || delta1mo <   500) return 'bad';
         return 'potential';
     }
 
-    function classify(jailNow, jailMonth1, jailMonth2, offNow, offMonth1, offMonth2) {
-        const jailVerdict    = classifyJailed(jailNow, jailMonth1, jailMonth2);
-        const offenseVerdict = classifyOffenses(offNow, offMonth1, offMonth2);
+    function classify(jailNow, jailWeeks2, jailMonth1, offNow, offWeeks2, offMonth1) {
+        const jailVerdict    = classifyJailed(jailNow, jailWeeks2, jailMonth1);
+        const offenseVerdict = classifyOffenses(offNow, offWeeks2, offMonth1);
         // Take the worse (lower-scored) of the two signals
         const minScore = Math.min(SCORE[jailVerdict], SCORE[offenseVerdict]);
         return SCORE_TO_VERDICT[minScore];
@@ -480,7 +498,7 @@
         return `<span class="${cls}">+${fmtNum(d)}</span>`;
     }
 
-    function buildResultTable(statsNow, stats14d, statsMonth1) {
+    function buildResultTable(statsNow, statsWeeks2, statsMonth1) {
         const STAT_ORDER = [
             'jailed',
             'criminaloffenses',
@@ -510,16 +528,16 @@
         let rows = '';
         for (const stat of STAT_ORDER) {
             const now    = statsNow[stat];
-            const d14    = stats14d[stat];
+            const weeks2 = statsWeeks2[stat];
             const m1     = statsMonth1[stat];
             const isJail = stat === 'jailed';
-            const delta14d = isJail ? deltaJail(now, d14) : deltaCrime(now, d14, '14d');
-            const delta1mo = isJail ? deltaJail(now, m1)  : deltaCrime(now, m1,  '1mo');
+            const deltaWeeks2 = isJail ? deltaJail(now, weeks2) : deltaCrime(now, weeks2, '14d');
+            const delta1mo    = isJail ? deltaJail(now, m1)     : deltaCrime(now, m1,     '1mo');
             rows += `
                 <tr>
                     <td class="af-stat-name${isJail ? ' af-highlight' : ''}">${LABELS[stat] ?? stat}</td>
                     <td class="${isJail ? 'af-highlight' : ''}">${fmtNum(now)}</td>
-                    <td>${fmtNum(d14)} ${delta14d}</td>
+                    <td>${fmtNum(weeks2)} ${deltaWeeks2}</td>
                     <td>${fmtNum(m1)} ${delta1mo}</td>
                 </tr>
             `;
@@ -573,15 +591,15 @@
         statusEl.style.display = 'none';
         statusEl.innerHTML = '';
 
-        const [statsNow, stats14d, statsMonth1] = results;
-        const jailNow    = statsNow['jailed']             ?? 0;
-        const jail14d    = stats14d['jailed']             ?? 0;
-        const jailMonth1 = statsMonth1['jailed']          ?? 0;
+        const [statsNow, statsWeeks2, statsMonth1] = results;
+        const jailNow    = statsNow['jailed']              ?? 0;
+        const jailWeeks2 = statsWeeks2['jailed']           ?? 0;
+        const jailMonth1 = statsMonth1['jailed']           ?? 0;
         const offNow     = statsNow['criminaloffenses']    ?? 0;
-        const off14d     = stats14d['criminaloffenses']   ?? 0;
+        const offWeeks2  = statsWeeks2['criminaloffenses'] ?? 0;
         const offMonth1  = statsMonth1['criminaloffenses'] ?? 0;
 
-        const verdict = classify(jailNow, jail14d, jailMonth1, offNow, off14d, offMonth1);
+        const verdict = classify(jailNow, jailWeeks2, jailMonth1, offNow, offWeeks2, offMonth1);
         const { label, color } = VERDICT[verdict];
 
         // Update the standalone badge
@@ -597,7 +615,7 @@
 
         // Show stat table
         tableWrap.style.display = 'block';
-        tableWrap.innerHTML = buildResultTable(statsNow, stats14d, statsMonth1);
+        tableWrap.innerHTML = buildResultTable(statsNow, statsWeeks2, statsMonth1);
     }
 
     // ─── Injection ────────────────────────────────────────────────────────────
