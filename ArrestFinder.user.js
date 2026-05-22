@@ -2,7 +2,7 @@
 // @name         ArrestFinder
 // @author       Sin_Vida (Craezin)
 // @namespace    https://www.torn.com/
-// @version      1.1.4
+// @version      1.1.5
 // @description  Analyzes a player's jailed & crime stats across three time windows to classify them as a Good, Potential, or Bad arrest target.
 // @author       ArrestFinder
 // @match        https://www.torn.com/profiles.php*
@@ -44,9 +44,9 @@
         return params.get('XID') || params.get('xid');
     }
 
-    function nowTs()         { return Math.floor(Date.now() / 1000); }
-    function oneMonthAgoTs() { return nowTs() - 30 * 24 * 60 * 60; }
-    function twoMonthAgoTs() { return nowTs() - 60 * 24 * 60 * 60; }
+    function nowTs()           { return Math.floor(Date.now() / 1000); }
+    function fourteenDaysAgoTs() { return nowTs() - 14 * 24 * 60 * 60; }
+    function oneMonthAgoTs()   { return nowTs() - 30 * 24 * 60 * 60; }
 
     // ─── GM_* Compatibility Shims ─────────────────────────────────────────────
     // TornPDA and other non-Tampermonkey engines may not support every GM_* API.
@@ -78,10 +78,10 @@
     function registerMenuCommands() {
         if (!HAS_GM_MENU) return; // silently skip on TornPDA / unsupported engines
 
-        GM_registerMenuCommand('Set API Key', () => {
+        GM_registerMenuCommand('🔑 Set API Key', () => {
             const current = getSavedKey();
             const input = prompt(
-                'ArrestFinder — Enter your Torn API v2 key: ',
+                'ArrestFinder — Enter your Torn API v2 key:\n(Leave blank and click OK to clear the saved key)',
                 current
             );
             if (input === null) return; // cancelled
@@ -97,7 +97,7 @@
             if (statusEl) updateKeyStatus(statusEl);
         });
 
-        GM_registerMenuCommand('Clear API Key', () => {
+        GM_registerMenuCommand('🗑️ Clear API Key', () => {
             if (!confirm('ArrestFinder: Clear the saved API key?')) return;
             deleteKey();
             alert('ArrestFinder: API key cleared.');
@@ -200,8 +200,8 @@
     const SCORE_TO_VERDICT = ['bad', 'potential', 'good']; // index = min score
 
     function classifyJailed(jailNow, jailMonth1, jailMonth2) {
-        if (jailNow === jailMonth2) return 'good';
-        if (jailNow === jailMonth1) return 'potential';
+        if (jailNow === jailMonth1 && jailNow === jailMonth2) return 'good';
+        if (jailNow === jailMonth1)                            return 'potential';
         return 'bad';
     }
 
@@ -398,10 +398,10 @@
             .af-delta-up-good      { color: ${COLORS.good};      font-size: 11px; } /* 1000+   */
             .af-delta-up-potential { color: ${COLORS.potential};  font-size: 11px; } /* 500-999 */
             .af-delta-up-bad       { color: ${COLORS.bad};        font-size: 11px; } /* 1-499   */
-            /* Tiered delta colours for crime stats (2mo window) */
-            .af-delta-up-good-2mo      { color: ${COLORS.good};      font-size: 11px; } /* 2000+     */
-            .af-delta-up-potential-2mo { color: ${COLORS.potential};  font-size: 11px; } /* 1000-1999 */
-            .af-delta-up-bad-2mo       { color: ${COLORS.bad};        font-size: 11px; } /* 1-999     */
+            /* Tiered delta colours for crime stats (14d window — half of 1mo thresholds) */
+            .af-delta-up-good-14d      { color: ${COLORS.good};      font-size: 11px; } /* 500+    */
+            .af-delta-up-potential-14d { color: ${COLORS.potential};  font-size: 11px; } /* 250-499 */
+            .af-delta-up-bad-14d       { color: ${COLORS.bad};        font-size: 11px; } /* 1-249   */
             /* Jailed delta — fixed colours, direction only */
             .af-delta-jail-up   { color: ${COLORS.bad};    font-size: 11px; }
             .af-delta-jail-down { color: ${COLORS.good};   font-size: 11px; }
@@ -459,7 +459,7 @@
         return `<span class="af-delta-jail-down">${fmtNum(d)}</span>`;
     }
 
-    // Delta for crime stats — tiered colour based on window (1mo vs 2mo) and magnitude
+    // Delta for crime stats — tiered colour based on window (14d vs 1mo) and magnitude
     function deltaCrime(now, then, window) {
         if (now == null || then == null) return '';
         const d = now - then;
@@ -472,15 +472,15 @@
             else if (d >= 500) cls = 'af-delta-up-potential';
             else               cls = 'af-delta-up-bad';
         } else {
-            // 2mo window: 1–999 → bad, 1000–1999 → potential, 2000+ → good
-            if (d >= 2000)      cls = 'af-delta-up-good-2mo';
-            else if (d >= 1000) cls = 'af-delta-up-potential-2mo';
-            else                cls = 'af-delta-up-bad-2mo';
+            // 14d window (half of 1mo): 1–249 → bad, 250–499 → potential, 500+ → good
+            if (d >= 500)      cls = 'af-delta-up-good-14d';
+            else if (d >= 250) cls = 'af-delta-up-potential-14d';
+            else               cls = 'af-delta-up-bad-14d';
         }
         return `<span class="${cls}">+${fmtNum(d)}</span>`;
     }
 
-    function buildResultTable(statsNow, statsMonth1, statsMonth3) {
+    function buildResultTable(statsNow, stats14d, statsMonth1) {
         const STAT_ORDER = [
             'jailed',
             'criminaloffenses',
@@ -510,17 +510,17 @@
         let rows = '';
         for (const stat of STAT_ORDER) {
             const now    = statsNow[stat];
+            const d14    = stats14d[stat];
             const m1     = statsMonth1[stat];
-            const m3     = statsMonth3[stat];
             const isJail = stat === 'jailed';
-            const d1 = isJail ? deltaJail(now, m1)            : deltaCrime(now, m1, '1mo');
-            const d2 = isJail ? deltaJail(now, m3)            : deltaCrime(now, m3, '2mo');
+            const delta14d = isJail ? deltaJail(now, d14) : deltaCrime(now, d14, '14d');
+            const delta1mo = isJail ? deltaJail(now, m1)  : deltaCrime(now, m1,  '1mo');
             rows += `
                 <tr>
                     <td class="af-stat-name${isJail ? ' af-highlight' : ''}">${LABELS[stat] ?? stat}</td>
                     <td class="${isJail ? 'af-highlight' : ''}">${fmtNum(now)}</td>
-                    <td>${fmtNum(m1)} ${d1}</td>
-                    <td>${fmtNum(m3)} ${d2}</td>
+                    <td>${fmtNum(d14)} ${delta14d}</td>
+                    <td>${fmtNum(m1)} ${delta1mo}</td>
                 </tr>
             `;
         }
@@ -532,8 +532,8 @@
                     <tr>
                         <th>Stat</th>
                         <th>Now</th>
+                        <th>14 Days Ago</th>
                         <th>1 Month Ago</th>
-                        <th>2 Months Ago</th>
                     </tr>
                 </thead>
                 <tbody>${rows}</tbody>
