@@ -2,7 +2,7 @@
 // @name         ArrestFinder
 // @author       Sin_Vida (Craezin)
 // @namespace    https://www.torn.com/
-// @version      1.1.5
+// @version      1.1.6
 // @description  Analyzes a player's jailed & crime stats across three time windows to classify them as a Good, Potential, or Bad arrest target.
 // @author       ArrestFinder
 // @match        https://www.torn.com/profiles.php*
@@ -547,9 +547,9 @@
         verdictBox.style.display = 'none';
 
         const steps = [
-            { label: 'Fetching current stats…',          ts: nowTs() },
-            { label: 'Fetching stats from 1 month ago…', ts: oneMonthAgoTs() },
-            { label: 'Fetching stats from 2 months ago…', ts: twoMonthAgoTs() },
+            { label: 'Fetching current stats…',            ts: nowTs() },
+            { label: 'Fetching stats from 14 days ago…',   ts: fourteenDaysAgoTs() },
+            { label: 'Fetching stats from 1 month ago…',   ts: oneMonthAgoTs() },
         ];
 
         const results = [];
@@ -573,15 +573,15 @@
         statusEl.style.display = 'none';
         statusEl.innerHTML = '';
 
-        const [statsNow, statsMonth1, statsMonth3] = results;
+        const [statsNow, stats14d, statsMonth1] = results;
         const jailNow    = statsNow['jailed']             ?? 0;
+        const jail14d    = stats14d['jailed']             ?? 0;
         const jailMonth1 = statsMonth1['jailed']          ?? 0;
-        const jailMonth2 = statsMonth3['jailed']          ?? 0;
         const offNow     = statsNow['criminaloffenses']    ?? 0;
+        const off14d     = stats14d['criminaloffenses']   ?? 0;
         const offMonth1  = statsMonth1['criminaloffenses'] ?? 0;
-        const offMonth2  = statsMonth3['criminaloffenses'] ?? 0;
 
-        const verdict = classify(jailNow, jailMonth1, jailMonth2, offNow, offMonth1, offMonth2);
+        const verdict = classify(jailNow, jail14d, jailMonth1, offNow, off14d, offMonth1);
         const { label, color } = VERDICT[verdict];
 
         // Update the standalone badge
@@ -597,7 +597,7 @@
 
         // Show stat table
         tableWrap.style.display = 'block';
-        tableWrap.innerHTML = buildResultTable(statsNow, statsMonth1, statsMonth3);
+        tableWrap.innerHTML = buildResultTable(statsNow, stats14d, statsMonth1);
     }
 
     // ─── Injection ────────────────────────────────────────────────────────────
