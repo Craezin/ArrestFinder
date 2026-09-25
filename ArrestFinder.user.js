@@ -2,7 +2,7 @@
 // @name         ArrestFinder
 // @author       Sin_Vida (Craezin)
 // @namespace    https://www.torn.com/
-// @version      1.1.8
+// @version      1.1.9
 // @description  Analyzes a player's jailed & crime stats across three time windows to classify them as a Good, Potential, or Bad arrest target.
 // @match        https://www.torn.com/profiles.php*
 // @downloadURL  https://github.com/Craezin/ArrestFinder/raw/refs/heads/main/ArrestFinder.user.js
@@ -25,9 +25,9 @@
     const COMMENT      = 'ArrestFinder';
 
     const COLORS = {
-        good:      '#2ecc71',   // green
-        potential: '#f39c12',   // amber
-        bad:       '#e74c3c',   // red
+        good:      '#2ecc71',   
+        potential: '#f39c12',   
+        bad:       '#e74c3c',   
         border:    '#3d3d3d',
         bg:        '#1a1a1a',
         bgAlt:     '#252525',
@@ -45,7 +45,7 @@
 
     function nowTs()           { return Math.floor(Date.now() / 1000); }
     function fourteenDaysAgoTs() { return nowTs() - 14 * 24 * 60 * 60; }
-    function oneMonthAgoTs()   { return nowTs() - 30 * 24 * 60 * 60; }
+    function twoMonthsAgoTs()  { return nowTs() - 60 * 24 * 60 * 60; }
 
     // ─── GM_* Compatibility Shims ─────────────────────────────────────────────
     const HAS_GM_GET    = typeof GM_getValue          === 'function';
@@ -68,17 +68,15 @@
         try { sessionStorage.removeItem(SCRIPT_KEY); } catch { /* silent */ }
     }
 
-    // ─── Tampermonkey Menu Commands ───────────────────────────────────────────
     function registerMenuCommands() {
-        if (!HAS_GM_MENU) return;
-
+        if (!HAS_GM_MENU) return; 
         GM_registerMenuCommand('🔑 Set API Key', () => {
             const current = getSavedKey();
             const input = prompt(
                 'ArrestFinder — Enter your Torn API v2 key:\n(Leave blank and click OK to clear the saved key)',
                 current
             );
-            if (input === null) return;
+            if (input === null) return; 
             const trimmed = input.trim();
             if (trimmed === '') {
                 deleteKey();
@@ -90,7 +88,6 @@
             const statusEl = document.getElementById('af-status');
             if (statusEl) updateKeyStatus(statusEl);
         });
-
         GM_registerMenuCommand('🗑️ Clear API Key', () => {
             if (!confirm('ArrestFinder: Clear the saved API key?')) return;
             deleteKey();
@@ -168,78 +165,31 @@
         return Number(n).toLocaleString();
     }
 
-    // ─── Classification Logic ─────────────────────────────────────────────────
-    /**
-     * Final verdict is the WORSE of the two individual signal verdicts.
-     * Precedence (worst → best): bad > potential > good
-     *
-     * ── JAILED SIGNAL ────────────────────────────────────────────────────────
-     *   GOOD      → jailed value is identical across all three snapshots
-     *               (player has not been jailed at all during the full 1-month window)
-     *   POTENTIAL → jailed(now) === jailed(14d) BUT differs from jailed(1mo)
-     *               (no new jails in the last 14 days, but was jailed before that)
-     *   BAD       → jailed(now) !== jailed(14d)
-     *               (player was jailed within the last 14 days — actively getting caught)
-     *
-     * ── CRIMINAL OFFENSES SIGNAL ─────────────────────────────────────────────
-     *   Measures how many NEW offenses occurred in each window:
-     *     delta2wk = offenses(now) − offenses(2 weeks ago)  ← crimes in last 2 weeks
-     *     delta1mo = offenses(now) − offenses(1 month ago)  ← crimes in last month
-     *
-     *   GOOD      → delta2wk >= 600  AND delta1mo >= 1200
-     *               (high, consistent criminal activity — very active target)
-     *   BAD       → delta2wk <  400  OR  delta1mo <   800
-     *               (low activity in either window — target is dormant/inactive)
-     *   POTENTIAL → everything in between
-     *               (moderate activity; some risk the player may not be reliably active)
-     *               **BOOST**: Upgraded to GOOD if theft in last 14 days > 100 or illicit services > 0.
-     *
-     * ── COMBINED VERDICT ─────────────────────────────────────────────────────
-     *   The two signals are scored (good=2, potential=1, bad=0) and the lower
-     *   score wins, so a single BAD signal is enough to mark the target BAD.
-     *   A single POTENTIAL signal alongside a GOOD pulls the result to POTENTIAL.
-     *   Only when BOTH signals are GOOD is the final verdict GOOD.
-     */
-    const SCORE = { good: 2, potential: 1, bad: 0 };
-    const SCORE_TO_VERDICT = ['bad', 'potential', 'good'];
+    // ─── Data-Driven Classification Logic ─────────────────────────────────────
+    
+    function classify(statsNow, statsWeeks2, statsMonths2) {
+        // Jail Deltas
+        const jail14d = (statsNow['jailed'] ?? 0) - (statsWeeks2['jailed'] ?? 0);
+        const jail60d = (statsNow['jailed'] ?? 0) - (statsMonths2['jailed'] ?? 0);
 
-    function classifyJailed(jailNow, jailWeeks2, jailMonth1) {
-        if (jailNow === jailWeeks2 && jailNow === jailMonth1) return 'good';
-        if (jailNow === jailWeeks2)                           return 'potential';
-        return 'bad';
-    }
+        // Crime Deltas
+        const crimes14d  = (statsNow['criminaloffenses'] ?? 0) - (statsWeeks2['criminaloffenses'] ?? 0);
+        const theft14d   = (statsNow['theft'] ?? 0) - (statsWeeks2['theft'] ?? 0);
+        const illicit14d = (statsNow['illicitservices'] ?? 0) - (statsWeeks2['illicitservices'] ?? 0);
 
-    function classifyOffenses(offNow, offWeeks2, offMonth1) {
-        const delta2wk = offNow - offWeeks2;
-        const delta1mo = offNow - offMonth1;
+        // 1. Evaluate Bad Conditions (Overrides all)
+        if (jail14d > 0) return 'bad'; // Actively getting caught
+        if (crimes14d < 400) return 'bad'; // Severe inactivity
+        if (crimes14d < 600 && jail60d > 0) return 'bad'; // Moderate inactivity with historical jail risk
 
-        if (delta2wk >= 600 && delta1mo >= 1200) return 'good';
-        if (delta2wk < 400 || delta1mo < 800) return 'bad';
+        // 2. Evaluate Good Conditions
+        const hasHighVolume = crimes14d >= 600;
+        const hasQualityBoost = (theft14d > 100) || (illicit14d > 0) || (jail60d === 0);
+        
+        if (hasHighVolume && hasQualityBoost) return 'good';
+
+        // 3. Potential (Failsafe for in-between targets)
         return 'potential';
-    }
-
-    function classify(statsNow, statsWeeks2, statsMonth1) {
-        const jailNow    = statsNow['jailed']              ?? 0;
-        const jailWeeks2 = statsWeeks2['jailed']           ?? 0;
-        const jailMonth1 = statsMonth1['jailed']           ?? 0;
-
-        const offNow     = statsNow['criminaloffenses']    ?? 0;
-        const offWeeks2  = statsWeeks2['criminaloffenses'] ?? 0;
-        const offMonth1  = statsMonth1['criminaloffenses'] ?? 0;
-
-        const theftDelta14d   = (statsNow['theft'] ?? 0) - (statsWeeks2['theft'] ?? 0);
-        const illicitDelta14d = (statsNow['illicitservices'] ?? 0) - (statsWeeks2['illicitservices'] ?? 0);
-
-        const jailVerdict    = classifyJailed(jailNow, jailWeeks2, jailMonth1);
-        let offenseVerdict = classifyOffenses(offNow, offWeeks2, offMonth1);
-
-        // Boost logic based on historical database: high-yield crimes convert potential targets to good
-        if (offenseVerdict === 'potential' && (theftDelta14d > 100 || illicitDelta14d > 50)) {
-            offenseVerdict = 'good';
-        }
-
-        const minScore = Math.min(SCORE[jailVerdict], SCORE[offenseVerdict]);
-        return SCORE_TO_VERDICT[minScore];
     }
 
     const VERDICT = {
@@ -248,11 +198,11 @@
         bad:       { label: '❌ Bad Arrest Target',        color: COLORS.bad },
     };
 
-    // ─── Badge Builder ────────────────────────────────────────────────────────
+    // ─── Badge & UI Builders ──────────────────────────────────────────────────
     function buildBadge() {
         const badge = document.createElement('div');
         badge.id = 'af-badge';
-        badge.style.display = 'none';
+        badge.style.display = 'none'; 
         badge.innerHTML = `
             <span class="af-badge-label">Arrest:</span><span class="af-badge-pill">…</span>
         `;
@@ -281,164 +231,42 @@
         badge.style.display = 'block';
     }
 
-    // ─── UI Builders ──────────────────────────────────────────────────────────
     function injectStyles() {
         const style = document.createElement('style');
         style.textContent = `
-            #af-panel {
-                font-family: inherit;
-                font-size: 13px;
-                background: ${COLORS.bg};
-                border: 1px solid ${COLORS.border};
-                border-radius: 6px;
-                margin: 10px 0 0 0;
-                color: ${COLORS.text};
-                overflow: hidden;
-                width: 100%;
-                clear: both;
-                box-sizing: border-box;
-                display: block;
-            }
-            #af-panel .af-header {
-                background: ${COLORS.header};
-                padding: 8px 12px;
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                border-bottom: 1px solid ${COLORS.border};
-                cursor: pointer;
-                user-select: none;
-            }
-            #af-panel .af-header-title {
-                font-weight: bold;
-                font-size: 13px;
-                letter-spacing: 0.4px;
-                color: ${COLORS.accent};
-                display: flex;
-                align-items: center;
-                gap: 6px;
-            }
-            #af-panel .af-toggle-icon {
-                font-size: 11px;
-                color: ${COLORS.muted};
-                transition: transform 0.2s;
-            }
-            #af-panel.af-collapsed .af-toggle-icon {
-                transform: rotate(-90deg);
-            }
-            #af-panel.af-collapsed #af-body {
-                display: none;
-            }
-            #af-body {
-                padding: 10px 12px;
-            }
-            #af-badge {
-                display: inline-block;
-                clear: both;
-                margin: 5px 0;
-                font-size: 12px;
-                font-weight: bold;
-                font-family: inherit;
-            }
-            #af-badge .af-badge-label {
-                font-weight: bold;
-                margin-right: 6px;
-            }
-            #af-badge .af-badge-pill {
-                display: inline-block;
-                color: white;
-                font-weight: bold;
-                padding: 2px 6px;
-                border-radius: 4px;
-                font-size: 12px;
-            }
-            .af-set-key-btn {
-                margin-left: 8px;
-                background: ${COLORS.accent};
-                color: #fff;
-                border: none;
-                padding: 3px 10px;
-                border-radius: 4px;
-                font-size: 12px;
-                font-weight: bold;
-                cursor: pointer;
-                vertical-align: middle;
-                transition: background 0.15s;
-            }
+            #af-panel { font-family: inherit; font-size: 13px; background: ${COLORS.bg}; border: 1px solid ${COLORS.border}; border-radius: 6px; margin: 10px 0 0 0; color: ${COLORS.text}; overflow: hidden; width: 100%; clear: both; box-sizing: border-box; display: block; }
+            #af-panel .af-header { background: ${COLORS.header}; padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid ${COLORS.border}; cursor: pointer; user-select: none; }
+            #af-panel .af-header-title { font-weight: bold; font-size: 13px; letter-spacing: 0.4px; color: ${COLORS.accent}; display: flex; align-items: center; gap: 6px; }
+            #af-panel .af-toggle-icon { font-size: 11px; color: ${COLORS.muted}; transition: transform 0.2s; }
+            #af-panel.af-collapsed .af-toggle-icon { transform: rotate(-90deg); }
+            #af-panel.af-collapsed #af-body { display: none; }
+            #af-body { padding: 10px 12px; }
+            #af-badge { display: inline-block; clear: both; margin: 5px 0; font-size: 12px; font-weight: bold; font-family: inherit; }
+            #af-badge .af-badge-label { font-weight: bold; margin-right: 6px; }
+            #af-badge .af-badge-pill { display: inline-block; color: white; font-weight: bold; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+            .af-set-key-btn { margin-left: 8px; background: ${COLORS.accent}; color: #fff; border: none; padding: 3px 10px; border-radius: 4px; font-size: 12px; font-weight: bold; cursor: pointer; vertical-align: middle; transition: background 0.15s; }
             .af-set-key-btn:hover { background: #217dbb; }
-            #af-status {
-                color: ${COLORS.muted};
-                font-size: 12px;
-                margin-bottom: 8px;
-                min-height: 16px;
-                display: none;
-            }
-            #af-verdict-box {
-                display: none;
-                border-radius: 5px;
-                padding: 10px 14px;
-                margin-bottom: 10px;
-                font-weight: bold;
-                font-size: 15px;
-                text-align: center;
-                border: 2px solid transparent;
-            }
-            #af-table-wrap {
-                display: none;
-            }
-            .af-table {
-                width: 100%;
-                border-collapse: collapse;
-                font-size: 12px;
-            }
-            .af-table th {
-                background: ${COLORS.bgAlt};
-                color: ${COLORS.muted};
-                font-weight: bold;
-                text-align: left;
-                padding: 5px 8px;
-                border-bottom: 1px solid ${COLORS.border};
-                text-transform: uppercase;
-                font-size: 10px;
-                letter-spacing: 0.5px;
-            }
-            .af-table td {
-                padding: 5px 8px;
-                border-bottom: 1px solid #2a2a2a;
-                color: ${COLORS.text};
-                vertical-align: middle;
-            }
+            #af-status { color: ${COLORS.muted}; font-size: 12px; margin-bottom: 8px; min-height: 16px; display: none; }
+            #af-verdict-box { display: none; border-radius: 5px; padding: 10px 14px; margin-bottom: 10px; font-weight: bold; font-size: 15px; text-align: center; border: 2px solid transparent; }
+            #af-table-wrap { display: none; }
+            .af-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+            .af-table th { background: ${COLORS.bgAlt}; color: ${COLORS.muted}; font-weight: bold; text-align: left; padding: 5px 8px; border-bottom: 1px solid ${COLORS.border}; text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; }
+            .af-table td { padding: 5px 8px; border-bottom: 1px solid #2a2a2a; color: ${COLORS.text}; vertical-align: middle; }
             .af-table tr:last-child td { border-bottom: none; }
             .af-table tr:nth-child(even) td { background: ${COLORS.bgAlt}; }
             .af-stat-name { font-weight: bold; color: #bbb; text-transform: capitalize; }
             .af-highlight { color: #fff; font-weight: bold; }
-            .af-delta-up-good      { color: ${COLORS.good};      font-size: 11px; }
-            .af-delta-up-potential { color: ${COLORS.potential};  font-size: 11px; }
-            .af-delta-up-bad       { color: ${COLORS.bad};        font-size: 11px; }
-            .af-delta-up-good-14d      { color: ${COLORS.good};      font-size: 11px; }
-            .af-delta-up-potential-14d { color: ${COLORS.potential};  font-size: 11px; }
-            .af-delta-up-bad-14d       { color: ${COLORS.bad};        font-size: 11px; }
+            .af-delta-up-good      { color: ${COLORS.good};      font-size: 11px; } 
+            .af-delta-up-potential { color: ${COLORS.potential};  font-size: 11px; } 
+            .af-delta-up-bad       { color: ${COLORS.bad};        font-size: 11px; } 
+            .af-delta-up-good-14d      { color: ${COLORS.good};      font-size: 11px; } 
+            .af-delta-up-potential-14d { color: ${COLORS.potential};  font-size: 11px; } 
+            .af-delta-up-bad-14d       { color: ${COLORS.bad};        font-size: 11px; } 
             .af-delta-jail-up   { color: ${COLORS.bad};    font-size: 11px; }
             .af-delta-jail-down { color: ${COLORS.good};   font-size: 11px; }
             .af-delta-zero { color: ${COLORS.muted};  font-size: 11px; }
-            .af-section-label {
-                font-size: 11px;
-                color: ${COLORS.muted};
-                text-transform: uppercase;
-                letter-spacing: 0.5px;
-                margin: 8px 0 4px;
-                font-weight: bold;
-            }
-            .af-spinner {
-                display: inline-block;
-                width: 12px; height: 12px;
-                border: 2px solid #555;
-                border-top-color: ${COLORS.accent};
-                border-radius: 50%;
-                animation: af-spin 0.7s linear infinite;
-                vertical-align: middle;
-                margin-right: 6px;
-            }
+            .af-section-label { font-size: 11px; color: ${COLORS.muted}; text-transform: uppercase; letter-spacing: 0.5px; margin: 8px 0 4px; font-weight: bold; }
+            .af-spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid #555; border-top-color: ${COLORS.accent}; border-radius: 50%; animation: af-spin 0.7s linear infinite; vertical-align: middle; margin-right: 6px; }
             @keyframes af-spin { to { transform: rotate(360deg); } }
         `;
         document.head.appendChild(style);
@@ -478,59 +306,44 @@
         if (d === 0) return `<span class="af-delta-zero">±0</span>`;
 
         let cls;
-        if (window === '1mo') {
-            if (d >= 1000)     cls = 'af-delta-up-good';
-            else if (d >= 500) cls = 'af-delta-up-potential';
+        if (window === '60d') {
+            if (d >= 2000)     cls = 'af-delta-up-good';
+            else if (d >= 1000) cls = 'af-delta-up-potential';
             else               cls = 'af-delta-up-bad';
         } else {
-            if (d >= 500)      cls = 'af-delta-up-good-14d';
-            else if (d >= 250) cls = 'af-delta-up-potential-14d';
+            if (d >= 600)      cls = 'af-delta-up-good-14d';
+            else if (d >= 400) cls = 'af-delta-up-potential-14d';
             else               cls = 'af-delta-up-bad-14d';
         }
         return `<span class="${cls}">+${fmtNum(d)}</span>`;
     }
 
-    function buildResultTable(statsNow, statsWeeks2, statsMonth1) {
+    function buildResultTable(statsNow, statsWeeks2, statsMonths2) {
         const STAT_ORDER = [
-            'jailed',
-            'criminaloffenses',
-            'vandalism',
-            'theft',
-            'counterfeiting',
-            'fraud',
-            'illicitservices',
-            'cybercrime',
-            'extortion',
-            'illegalproduction',
+            'jailed', 'criminaloffenses', 'vandalism', 'theft', 'counterfeiting', 
+            'fraud', 'illicitservices', 'cybercrime', 'extortion', 'illegalproduction'
         ];
-
         const LABELS = {
-            jailed:              'Times Jailed',
-            criminaloffenses:    'Criminal Offenses',
-            vandalism:           'Vandalism',
-            theft:               'Theft',
-            counterfeiting:      'Counterfeiting',
-            fraud:               'Fraud',
-            illicitservices:     'Illicit Services',
-            cybercrime:          'Cybercrime',
-            extortion:           'Extortion',
-            illegalproduction:   'Illegal Production',
+            jailed: 'Times Jailed', criminaloffenses: 'Criminal Offenses', vandalism: 'Vandalism',
+            theft: 'Theft', counterfeiting: 'Counterfeiting', fraud: 'Fraud', 
+            illicitservices: 'Illicit Services', cybercrime: 'Cybercrime', 
+            extortion: 'Extortion', illegalproduction: 'Illegal Production'
         };
 
         let rows = '';
         for (const stat of STAT_ORDER) {
             const now    = statsNow[stat];
             const weeks2 = statsWeeks2[stat];
-            const m1     = statsMonth1[stat];
+            const m2     = statsMonths2[stat];
             const isJail = stat === 'jailed';
             const deltaWeeks2 = isJail ? deltaJail(now, weeks2) : deltaCrime(now, weeks2, '14d');
-            const delta1mo    = isJail ? deltaJail(now, m1)     : deltaCrime(now, m1,     '1mo');
+            const delta60d    = isJail ? deltaJail(now, m2)     : deltaCrime(now, m2, '60d');
             rows += `
                 <tr>
                     <td class="af-stat-name${isJail ? ' af-highlight' : ''}">${LABELS[stat] ?? stat}</td>
                     <td class="${isJail ? 'af-highlight' : ''}">${fmtNum(now)}</td>
                     <td>${fmtNum(weeks2)} ${deltaWeeks2}</td>
-                    <td>${fmtNum(m1)} ${delta1mo}</td>
+                    <td>${fmtNum(m2)} ${delta60d}</td>
                 </tr>
             `;
         }
@@ -543,7 +356,7 @@
                         <th>Stat</th>
                         <th>Now</th>
                         <th>14 Days Ago</th>
-                        <th>1 Month Ago</th>
+                        <th>2 Months Ago</th>
                     </tr>
                 </thead>
                 <tbody>${rows}</tbody>
@@ -559,7 +372,7 @@
         const steps = [
             { label: 'Fetching current stats…',            ts: nowTs() },
             { label: 'Fetching stats from 14 days ago…',   ts: fourteenDaysAgoTs() },
-            { label: 'Fetching stats from 1 month ago…',   ts: oneMonthAgoTs() },
+            { label: 'Fetching stats from 2 months ago…',  ts: twoMonthsAgoTs() },
         ];
 
         const results = [];
@@ -582,9 +395,9 @@
         statusEl.style.display = 'none';
         statusEl.innerHTML = '';
 
-        const [statsNow, statsWeeks2, statsMonth1] = results;
+        const [statsNow, statsWeeks2, statsMonths2] = results;
 
-        const verdict = classify(statsNow, statsWeeks2, statsMonth1);
+        const verdict = classify(statsNow, statsWeeks2, statsMonths2);
         const { label, color } = VERDICT[verdict];
 
         updateBadge(badge, verdict);
@@ -593,21 +406,16 @@
         verdictBox.style.background = color + '22';
         verdictBox.style.borderColor = color;
         verdictBox.style.color = color;
-
         verdictBox.innerHTML = label;
 
         tableWrap.style.display = 'block';
-        tableWrap.innerHTML = buildResultTable(statsNow, statsWeeks2, statsMonth1);
+        tableWrap.innerHTML = buildResultTable(statsNow, statsWeeks2, statsMonths2);
     }
 
     // ─── Injection ────────────────────────────────────────────────────────────
     function injectPanel(userId) {
         const container = document.querySelector('div.content-title.m-bottom10');
-        if (!container) {
-            console.warn('[ArrestFinder] Could not find div.content-title.m-bottom10 — aborting injection.');
-            return;
-        }
-
+        if (!container) return;
         if (document.getElementById('af-panel')) return;
 
         injectStyles();
@@ -615,15 +423,12 @@
         container.appendChild(panel);
 
         const badge = injectBadge();
-
         const header     = panel.querySelector('#af-header');
         const statusEl   = panel.querySelector('#af-status');
         const verdictBox = panel.querySelector('#af-verdict-box');
         const tableWrap  = panel.querySelector('#af-table-wrap');
 
-        header.addEventListener('click', () => {
-            panel.classList.toggle('af-collapsed');
-        });
+        header.addEventListener('click', () => panel.classList.toggle('af-collapsed'));
 
         const key = getSavedKey();
         if (!key) {
@@ -634,7 +439,7 @@
             `;
             document.getElementById('af-set-key-btn').addEventListener('click', () => {
                 const input = prompt('ArrestFinder — Enter your Torn API v2 key:');
-                if (input === null) return;
+                if (input === null) return; 
                 const trimmed = input.trim();
                 if (!trimmed) return;
                 saveKey(trimmed);
@@ -643,30 +448,21 @@
             });
             return;
         }
-
         runAnalysis(userId, key, statusEl, verdictBox, tableWrap, badge);
     }
 
-    // ─── Entry Point ──────────────────────────────────────────────────────────
     function init() {
         registerMenuCommands();
-
         const userId = getTargetUserId();
-        if (!userId) return;
-
+        if (!userId) return; 
         const tryInject = () => {
             const target = document.querySelector('div.content-title.m-bottom10');
-            if (target) {
-                injectPanel(userId);
-            } else {
-                setTimeout(tryInject, 300);
-            }
+            if (target) injectPanel(userId);
+            else setTimeout(tryInject, 300);
         };
-
         tryInject();
     }
 
-    // ─── Wait for DOM ─────────────────────────────────────────────────────────
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
     } else {
