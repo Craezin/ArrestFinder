@@ -2,9 +2,8 @@
 // @name         ArrestFinder
 // @author       Sin_Vida (Craezin)
 // @namespace    https://www.torn.com/
-// @version      1.1.7
+// @version      1.1.8
 // @description  Analyzes a player's jailed & crime stats across three time windows to classify them as a Good, Potential, or Bad arrest target.
-// @author       ArrestFinder
 // @match        https://www.torn.com/profiles.php*
 // @downloadURL  https://github.com/Craezin/ArrestFinder/raw/refs/heads/main/ArrestFinder.user.js
 // @updateURL    https://github.com/Craezin/ArrestFinder/raw/refs/heads/main/ArrestFinder.user.js
@@ -49,16 +48,12 @@
     function oneMonthAgoTs()   { return nowTs() - 30 * 24 * 60 * 60; }
 
     // ─── GM_* Compatibility Shims ─────────────────────────────────────────────
-    // TornPDA and other non-Tampermonkey engines may not support every GM_* API.
-    // These wrappers fall back gracefully rather than throwing ReferenceErrors.
-
     const HAS_GM_GET    = typeof GM_getValue          === 'function';
     const HAS_GM_SET    = typeof GM_setValue          === 'function';
     const HAS_GM_DEL    = typeof GM_deleteValue       === 'function';
     const HAS_GM_MENU   = typeof GM_registerMenuCommand === 'function';
     const HAS_GM_XHR    = typeof GM_xmlhttpRequest    === 'function';
 
-    // Persistent storage: falls back to sessionStorage when GM storage is absent
     function getSavedKey() {
         if (HAS_GM_GET) return GM_getValue(SCRIPT_KEY, '');
         try { return sessionStorage.getItem(SCRIPT_KEY) || ''; } catch { return ''; }
@@ -74,9 +69,8 @@
     }
 
     // ─── Tampermonkey Menu Commands ───────────────────────────────────────────
-    // Only registered when the engine supports GM_registerMenuCommand.
     function registerMenuCommands() {
-        if (!HAS_GM_MENU) return; // silently skip on TornPDA / unsupported engines
+        if (!HAS_GM_MENU) return;
 
         GM_registerMenuCommand('🔑 Set API Key', () => {
             const current = getSavedKey();
@@ -84,7 +78,7 @@
                 'ArrestFinder — Enter your Torn API v2 key:\n(Leave blank and click OK to clear the saved key)',
                 current
             );
-            if (input === null) return; // cancelled
+            if (input === null) return;
             const trimmed = input.trim();
             if (trimmed === '') {
                 deleteKey();
@@ -106,8 +100,6 @@
         });
     }
 
-    // Updates the key-status element visibility.
-    // Hidden entirely when a key exists; only shown with a warning when missing.
     function updateKeyStatus(statusEl) {
         const key = getSavedKey();
         if (key) {
@@ -115,8 +107,6 @@
             statusEl.innerHTML = '';
         } else {
             statusEl.style.display = 'block';
-            // On platforms without a Tampermonkey menu, the inline Set Key button
-            // is the only entry point — no need to mention the TM menu.
             const hint = HAS_GM_MENU
                 ? ' — open the <strong>Tampermonkey menu</strong> to add one.'
                 : '';
@@ -137,14 +127,11 @@
         return out;
     }
 
-    // Guard against TornPDA's injection wrapper calling document.currentScript
-    // in a null context — safe no-op if it doesn't exist.
     if (typeof document.currentScript === 'undefined') {
         Object.defineProperty(document, 'currentScript', { value: null, configurable: true });
     }
 
     function fetchGM(url) {
-        // Use GM_xmlhttpRequest when available (bypasses CORS on Tampermonkey).
         if (HAS_GM_XHR) {
             return new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
@@ -158,8 +145,6 @@
                 });
             });
         }
-        // Fallback: use XMLHttpRequest instead of fetch() — TornPDA blocks
-        // cross-origin fetch() but allows XHR through its internal handler.
         return new Promise((resolve, reject) => {
             const xhr = new XMLHttpRequest();
             xhr.open('GET', url, true);
@@ -190,23 +175,24 @@
      *
      * ── JAILED SIGNAL ────────────────────────────────────────────────────────
      *   GOOD      → jailed value is identical across all three snapshots
-     *               (player has not been jailed at all during the full 3-month window)
-     *   POTENTIAL → jailed(now) === jailed(1mo) BUT differs from jailed(3mo)
-     *               (no new jails in the last month, but was jailed before that)
-     *   BAD       → jailed(now) !== jailed(1mo)
-     *               (player was jailed within the last month — actively getting caught)
+     *               (player has not been jailed at all during the full 1-month window)
+     *   POTENTIAL → jailed(now) === jailed(14d) BUT differs from jailed(1mo)
+     *               (no new jails in the last 14 days, but was jailed before that)
+     *   BAD       → jailed(now) !== jailed(14d)
+     *               (player was jailed within the last 14 days — actively getting caught)
      *
      * ── CRIMINAL OFFENSES SIGNAL ─────────────────────────────────────────────
      *   Measures how many NEW offenses occurred in each window:
      *     delta2wk = offenses(now) − offenses(2 weeks ago)  ← crimes in last 2 weeks
      *     delta1mo = offenses(now) − offenses(1 month ago)  ← crimes in last month
      *
-     *   GOOD      → delta2wk >= 500  AND delta1mo >= 1000
+     *   GOOD      → delta2wk >= 600  AND delta1mo >= 1200
      *               (high, consistent criminal activity — very active target)
-     *   BAD       → delta2wk <  250  OR  delta1mo <   500
+     *   BAD       → delta2wk <  400  OR  delta1mo <   800
      *               (low activity in either window — target is dormant/inactive)
      *   POTENTIAL → everything in between
      *               (moderate activity; some risk the player may not be reliably active)
+     *               **BOOST**: Upgraded to GOOD if theft in last 14 days > 100 or illicit services > 0.
      *
      * ── COMBINED VERDICT ─────────────────────────────────────────────────────
      *   The two signals are scored (good=2, potential=1, bad=0) and the lower
@@ -215,7 +201,7 @@
      *   Only when BOTH signals are GOOD is the final verdict GOOD.
      */
     const SCORE = { good: 2, potential: 1, bad: 0 };
-    const SCORE_TO_VERDICT = ['bad', 'potential', 'good']; // index = min score
+    const SCORE_TO_VERDICT = ['bad', 'potential', 'good'];
 
     function classifyJailed(jailNow, jailWeeks2, jailMonth1) {
         if (jailNow === jailWeeks2 && jailNow === jailMonth1) return 'good';
@@ -224,18 +210,34 @@
     }
 
     function classifyOffenses(offNow, offWeeks2, offMonth1) {
-        const delta2wk = offNow - offWeeks2; // new crimes in last 2 weeks
-        const delta1mo = offNow - offMonth1; // new crimes in last month
+        const delta2wk = offNow - offWeeks2;
+        const delta1mo = offNow - offMonth1;
 
-        if (delta2wk >= 500  && delta1mo >= 1000) return 'good';
-        if (delta2wk <  250  || delta1mo <   500) return 'bad';
+        if (delta2wk >= 600 && delta1mo >= 1200) return 'good';
+        if (delta2wk < 400 || delta1mo < 800) return 'bad';
         return 'potential';
     }
 
-    function classify(jailNow, jailWeeks2, jailMonth1, offNow, offWeeks2, offMonth1) {
+    function classify(statsNow, statsWeeks2, statsMonth1) {
+        const jailNow    = statsNow['jailed']              ?? 0;
+        const jailWeeks2 = statsWeeks2['jailed']           ?? 0;
+        const jailMonth1 = statsMonth1['jailed']           ?? 0;
+
+        const offNow     = statsNow['criminaloffenses']    ?? 0;
+        const offWeeks2  = statsWeeks2['criminaloffenses'] ?? 0;
+        const offMonth1  = statsMonth1['criminaloffenses'] ?? 0;
+
+        const theftDelta14d   = (statsNow['theft'] ?? 0) - (statsWeeks2['theft'] ?? 0);
+        const illicitDelta14d = (statsNow['illicitservices'] ?? 0) - (statsWeeks2['illicitservices'] ?? 0);
+
         const jailVerdict    = classifyJailed(jailNow, jailWeeks2, jailMonth1);
-        const offenseVerdict = classifyOffenses(offNow, offWeeks2, offMonth1);
-        // Take the worse (lower-scored) of the two signals
+        let offenseVerdict = classifyOffenses(offNow, offWeeks2, offMonth1);
+
+        // Boost logic based on historical database: high-yield crimes convert potential targets to good
+        if (offenseVerdict === 'potential' && (theftDelta14d > 100 || illicitDelta14d > 50)) {
+            offenseVerdict = 'good';
+        }
+
         const minScore = Math.min(SCORE[jailVerdict], SCORE[offenseVerdict]);
         return SCORE_TO_VERDICT[minScore];
     }
@@ -247,12 +249,10 @@
     };
 
     // ─── Badge Builder ────────────────────────────────────────────────────────
-    // A small inline indicator injected next to #ff-scouter-run-once that shows
-    // the verdict immediately without needing the panel to be expanded.
     function buildBadge() {
         const badge = document.createElement('div');
         badge.id = 'af-badge';
-        badge.style.display = 'none'; // hidden until verdict is ready
+        badge.style.display = 'none';
         badge.innerHTML = `
             <span class="af-badge-label">Arrest:</span><span class="af-badge-pill">…</span>
         `;
@@ -412,18 +412,14 @@
             .af-table tr:nth-child(even) td { background: ${COLORS.bgAlt}; }
             .af-stat-name { font-weight: bold; color: #bbb; text-transform: capitalize; }
             .af-highlight { color: #fff; font-weight: bold; }
-            /* Tiered delta colours for crime stats (1mo window) */
-            .af-delta-up-good      { color: ${COLORS.good};      font-size: 11px; } /* 1000+   */
-            .af-delta-up-potential { color: ${COLORS.potential};  font-size: 11px; } /* 500-999 */
-            .af-delta-up-bad       { color: ${COLORS.bad};        font-size: 11px; } /* 1-499   */
-            /* Tiered delta colours for crime stats (14d window — half of 1mo thresholds) */
-            .af-delta-up-good-14d      { color: ${COLORS.good};      font-size: 11px; } /* 500+    */
-            .af-delta-up-potential-14d { color: ${COLORS.potential};  font-size: 11px; } /* 250-499 */
-            .af-delta-up-bad-14d       { color: ${COLORS.bad};        font-size: 11px; } /* 1-249   */
-            /* Jailed delta — fixed colours, direction only */
+            .af-delta-up-good      { color: ${COLORS.good};      font-size: 11px; }
+            .af-delta-up-potential { color: ${COLORS.potential};  font-size: 11px; }
+            .af-delta-up-bad       { color: ${COLORS.bad};        font-size: 11px; }
+            .af-delta-up-good-14d      { color: ${COLORS.good};      font-size: 11px; }
+            .af-delta-up-potential-14d { color: ${COLORS.potential};  font-size: 11px; }
+            .af-delta-up-bad-14d       { color: ${COLORS.bad};        font-size: 11px; }
             .af-delta-jail-up   { color: ${COLORS.bad};    font-size: 11px; }
             .af-delta-jail-down { color: ${COLORS.good};   font-size: 11px; }
-            /* Shared */
             .af-delta-zero { color: ${COLORS.muted};  font-size: 11px; }
             .af-section-label {
                 font-size: 11px;
@@ -468,7 +464,6 @@
         return panel;
     }
 
-    // Delta for Times Jailed — colour by direction only (up=bad, down=good)
     function deltaJail(now, then) {
         if (now == null || then == null) return '';
         const d = now - then;
@@ -477,7 +472,6 @@
         return `<span class="af-delta-jail-down">${fmtNum(d)}</span>`;
     }
 
-    // Delta for crime stats — tiered colour based on window (14d vs 1mo) and magnitude
     function deltaCrime(now, then, window) {
         if (now == null || then == null) return '';
         const d = now - then;
@@ -485,12 +479,10 @@
 
         let cls;
         if (window === '1mo') {
-            // 1–499 → bad, 500–999 → potential, 1000+ → good
             if (d >= 1000)     cls = 'af-delta-up-good';
             else if (d >= 500) cls = 'af-delta-up-potential';
             else               cls = 'af-delta-up-bad';
         } else {
-            // 14d window (half of 1mo): 1–249 → bad, 250–499 → potential, 500+ → good
             if (d >= 500)      cls = 'af-delta-up-good-14d';
             else if (d >= 250) cls = 'af-delta-up-potential-14d';
             else               cls = 'af-delta-up-bad-14d';
@@ -587,25 +579,16 @@
             }
         }
 
-        // Hide status now that fetching is done
         statusEl.style.display = 'none';
         statusEl.innerHTML = '';
 
         const [statsNow, statsWeeks2, statsMonth1] = results;
-        const jailNow    = statsNow['jailed']              ?? 0;
-        const jailWeeks2 = statsWeeks2['jailed']           ?? 0;
-        const jailMonth1 = statsMonth1['jailed']           ?? 0;
-        const offNow     = statsNow['criminaloffenses']    ?? 0;
-        const offWeeks2  = statsWeeks2['criminaloffenses'] ?? 0;
-        const offMonth1  = statsMonth1['criminaloffenses'] ?? 0;
 
-        const verdict = classify(jailNow, jailWeeks2, jailMonth1, offNow, offWeeks2, offMonth1);
+        const verdict = classify(statsNow, statsWeeks2, statsMonth1);
         const { label, color } = VERDICT[verdict];
 
-        // Update the standalone badge
         updateBadge(badge, verdict);
 
-        // Show verdict box
         verdictBox.style.display = 'block';
         verdictBox.style.background = color + '22';
         verdictBox.style.borderColor = color;
@@ -613,28 +596,24 @@
 
         verdictBox.innerHTML = label;
 
-        // Show stat table
         tableWrap.style.display = 'block';
         tableWrap.innerHTML = buildResultTable(statsNow, statsWeeks2, statsMonth1);
     }
 
     // ─── Injection ────────────────────────────────────────────────────────────
     function injectPanel(userId) {
-        // Target exactly: <div class="content-title m-bottom10">
         const container = document.querySelector('div.content-title.m-bottom10');
         if (!container) {
             console.warn('[ArrestFinder] Could not find div.content-title.m-bottom10 — aborting injection.');
             return;
         }
 
-        // Guard against double-injection on SPA navigations
         if (document.getElementById('af-panel')) return;
 
         injectStyles();
         const panel = buildPanel();
         container.appendChild(panel);
 
-        // Inject the standalone badge near #ff-scouter-run-once
         const badge = injectBadge();
 
         const header     = panel.querySelector('#af-header');
@@ -642,14 +621,12 @@
         const verdictBox = panel.querySelector('#af-verdict-box');
         const tableWrap  = panel.querySelector('#af-table-wrap');
 
-        // Collapse toggle
         header.addEventListener('click', () => {
             panel.classList.toggle('af-collapsed');
         });
 
         const key = getSavedKey();
         if (!key) {
-            // No key — show the warning with an inline set-key button
             statusEl.style.display = 'block';
             statusEl.innerHTML = `
                 <span style="color:#e74c3c;">⚠ API Key Missing</span>
@@ -657,31 +634,26 @@
             `;
             document.getElementById('af-set-key-btn').addEventListener('click', () => {
                 const input = prompt('ArrestFinder — Enter your Torn API v2 key:');
-                if (input === null) return; // cancelled
+                if (input === null) return;
                 const trimmed = input.trim();
                 if (!trimmed) return;
                 saveKey(trimmed);
-                // Remove panel and re-inject so analysis runs fresh with the new key
                 panel.remove();
                 injectPanel(userId);
             });
             return;
         }
 
-        // Key present — run immediately, status stays hidden
         runAnalysis(userId, key, statusEl, verdictBox, tableWrap, badge);
     }
 
     // ─── Entry Point ──────────────────────────────────────────────────────────
     function init() {
-        // Register Tampermonkey menu commands regardless of which page we're on
-        // so the user can set/clear their key from any Torn page.
         registerMenuCommands();
 
         const userId = getTargetUserId();
-        if (!userId) return; // Not on a profile page
+        if (!userId) return;
 
-        // Poll until div.content-title.m-bottom10 is present in the DOM.
         const tryInject = () => {
             const target = document.querySelector('div.content-title.m-bottom10');
             if (target) {
