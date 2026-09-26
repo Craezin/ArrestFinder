@@ -2,7 +2,7 @@
 // @name         ArrestFinder
 // @author       Sin_Vida (Craezin)
 // @namespace    https://www.torn.com/
-// @version      1.1.11
+// @version      1.1.12
 // @description  Analyzes a player's jailed & crime stats across three time windows to classify them as a Good, Potential, or Bad arrest target.
 // @match        https://www.torn.com/profiles.php*
 // @downloadURL  https://github.com/Craezin/ArrestFinder/raw/refs/heads/main/ArrestFinder.user.js
@@ -21,7 +21,7 @@
 
     // ─── Constants ────────────────────────────────────────────────────────────
     const SCRIPT_KEY   = 'arrestfinder_apikey';
-    const STATS_PARAM  = 'jailed,criminaloffenses,vandalism,theft,counterfeiting,fraud,illicitservices,cybercrime,extortion,illegalproduction';
+    const STATS_PARAM  = 'jailed,nerverefills,vandalism,theft,counterfeiting,fraud,illicitservices,cybercrime,extortion,illegalproduction';
     const COMMENT      = 'ArrestFinder';
 
     const COLORS = {
@@ -124,6 +124,17 @@
         for (const item of list) {
             out[item.name] = item.value;
         }
+        
+        // Calculate criminaloffenses manually by summing up all specific crime types
+        out['criminaloffenses'] = (out['vandalism'] ?? 0) +
+                                  (out['theft'] ?? 0) +
+                                  (out['counterfeiting'] ?? 0) +
+                                  (out['fraud'] ?? 0) +
+                                  (out['illicitservices'] ?? 0) +
+                                  (out['cybercrime'] ?? 0) +
+                                  (out['extortion'] ?? 0) +
+                                  (out['illegalproduction'] ?? 0);
+        
         return out;
     }
 
@@ -502,6 +513,7 @@
             'cybercrime',
             'extortion',
             'illegalproduction',
+            'nerverefills',
         ];
 
         const LABELS = {
@@ -515,6 +527,7 @@
             cybercrime:          'Cybercrime',
             extortion:           'Extortion',
             illegalproduction:   'Illegal Production',
+            nerverefills:        'Nerve Refills',
         };
 
         let rows = '';
