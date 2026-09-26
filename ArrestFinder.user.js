@@ -2,7 +2,7 @@
 // @name         ArrestFinder
 // @author       Sin_Vida (Craezin)
 // @namespace    https://www.torn.com/
-// @version      1.1.10
+// @version      1.1.11
 // @description  Analyzes a player's jailed & crime stats across three time windows to classify them as a Good, Potential, or Bad arrest target.
 // @match        https://www.torn.com/profiles.php*
 // @downloadURL  https://github.com/Craezin/ArrestFinder/raw/refs/heads/main/ArrestFinder.user.js
@@ -44,8 +44,8 @@
     }
 
     function nowTs()           { return Math.floor(Date.now() / 1000); }
+    function sevenDaysAgoTs()  { return nowTs() - 7 * 24 * 60 * 60; }
     function fourteenDaysAgoTs() { return nowTs() - 14 * 24 * 60 * 60; }
-    function oneMonthAgoTs()   { return nowTs() - 30 * 24 * 60 * 60; }
 
     // ─── GM_* Compatibility Shims ─────────────────────────────────────────────
     const HAS_GM_GET    = typeof GM_getValue          === 'function';
@@ -175,24 +175,24 @@
      *
      * ── JAILED SIGNAL ────────────────────────────────────────────────────────
      *   GOOD      → jailed value is identical across all three snapshots
-     *               (player has not been jailed at all during the full 1-month window)
-     *   POTENTIAL → jailed(now) === jailed(14d) BUT differs from jailed(1mo)
-     *               (no new jails in the last 14 days, but was jailed before that)
-     *   BAD       → jailed(now) !== jailed(14d)
-     *               (player was jailed within the last 14 days — actively getting caught)
+     *               (player has not been jailed at all during the full 14-day window)
+     *   POTENTIAL → jailed(now) === jailed(7d) BUT differs from jailed(14d)
+     *               (no new jails in the last 7 days, but was jailed before that)
+     *   BAD       → jailed(now) !== jailed(7d)
+     *               (player was jailed within the last 7 days — actively getting caught)
      *
      * ── CRIMINAL OFFENSES SIGNAL ─────────────────────────────────────────────
      *   Measures how many NEW offenses occurred in each window:
-     *     delta2wk = offenses(now) − offenses(2 weeks ago)  ← crimes in last 2 weeks
-     *     delta1mo = offenses(now) − offenses(1 month ago)  ← crimes in last month
+     *     delta1wk = offenses(now) − offenses(1 week ago)   ← crimes in last 7 days
+     *     delta2wk = offenses(now) − offenses(2 weeks ago)  ← crimes in last 14 days
      *
-     *   GOOD      → delta2wk >= 600  AND delta1mo >= 1200
+     *   GOOD      → delta1wk >= 300  AND delta2wk >= 600
      *               (high, consistent criminal activity — very active target)
-     *   BAD       → delta2wk <  400  OR  delta1mo <   800
+     *   BAD       → delta1wk <  200  OR  delta2wk <  400
      *               (low activity in either window — target is dormant/inactive)
      *   POTENTIAL → everything in between
      *               (moderate activity; some risk the player may not be reliably active)
-     *               **BOOST**: Upgraded to GOOD if theft in last 14 days > 100 or illicit services > 0.
+     *               **BOOST**: Upgraded to GOOD if theft in last 7 days > 50 or illicit services > 25.
      *
      * ── COMBINED VERDICT ─────────────────────────────────────────────────────
      *   The two signals are scored (good=2, potential=1, bad=0) and the lower
@@ -203,38 +203,38 @@
     const SCORE = { good: 2, potential: 1, bad: 0 };
     const SCORE_TO_VERDICT = ['bad', 'potential', 'good'];
 
-    function classifyJailed(jailNow, jailWeeks2, jailMonth1) {
-        if (jailNow === jailWeeks2 && jailNow === jailMonth1) return 'good';
-        if (jailNow === jailWeeks2)                           return 'potential';
+    function classifyJailed(jailNow, jailDays7, jailDays14) {
+        if (jailNow === jailDays7 && jailNow === jailDays14) return 'good';
+        if (jailNow === jailDays7)                           return 'potential';
         return 'bad';
     }
 
-    function classifyOffenses(offNow, offWeeks2, offMonth1) {
-        const delta2wk = offNow - offWeeks2;
-        const delta1mo = offNow - offMonth1;
+    function classifyOffenses(offNow, offDays7, offDays14) {
+        const delta1wk = offNow - offDays7;
+        const delta2wk = offNow - offDays14;
 
-        if (delta2wk >= 600 && delta1mo >= 1200) return 'good';
-        if (delta2wk < 400 || delta1mo < 800) return 'bad';
+        if (delta1wk >= 300 && delta2wk >= 600) return 'good';
+        if (delta1wk < 200 || delta2wk < 400) return 'bad';
         return 'potential';
     }
 
-    function classify(statsNow, statsWeeks2, statsMonth1) {
+    function classify(statsNow, statsDays7, statsDays14) {
         const jailNow    = statsNow['jailed']              ?? 0;
-        const jailWeeks2 = statsWeeks2['jailed']           ?? 0;
-        const jailMonth1 = statsMonth1['jailed']           ?? 0;
+        const jailDays7  = statsDays7['jailed']            ?? 0;
+        const jailDays14 = statsDays14['jailed']           ?? 0;
 
         const offNow     = statsNow['criminaloffenses']    ?? 0;
-        const offWeeks2  = statsWeeks2['criminaloffenses'] ?? 0;
-        const offMonth1  = statsMonth1['criminaloffenses'] ?? 0;
+        const offDays7   = statsDays7['criminaloffenses']  ?? 0;
+        const offDays14  = statsDays14['criminaloffenses'] ?? 0;
 
-        const theftDelta14d   = (statsNow['theft'] ?? 0) - (statsWeeks2['theft'] ?? 0);
-        const illicitDelta14d = (statsNow['illicitservices'] ?? 0) - (statsWeeks2['illicitservices'] ?? 0);
+        const theftDelta7d   = (statsNow['theft'] ?? 0) - (statsDays7['theft'] ?? 0);
+        const illicitDelta7d = (statsNow['illicitservices'] ?? 0) - (statsDays7['illicitservices'] ?? 0);
 
-        const jailVerdict    = classifyJailed(jailNow, jailWeeks2, jailMonth1);
-        let offenseVerdict = classifyOffenses(offNow, offWeeks2, offMonth1);
+        const jailVerdict    = classifyJailed(jailNow, jailDays7, jailDays14);
+        let offenseVerdict = classifyOffenses(offNow, offDays7, offDays14);
 
         // Boost logic based on historical database: high-yield crimes convert potential targets to good
-        if (offenseVerdict === 'potential' && (theftDelta14d > 100 || illicitDelta14d > 50)) {
+        if (offenseVerdict === 'potential' && (theftDelta7d > 50 || illicitDelta7d > 25)) {
             offenseVerdict = 'good';
         }
 
@@ -415,9 +415,9 @@
             .af-delta-up-good      { color: ${COLORS.good};      font-size: 11px; }
             .af-delta-up-potential { color: ${COLORS.potential};  font-size: 11px; }
             .af-delta-up-bad       { color: ${COLORS.bad};        font-size: 11px; }
-            .af-delta-up-good-14d      { color: ${COLORS.good};      font-size: 11px; }
-            .af-delta-up-potential-14d { color: ${COLORS.potential};  font-size: 11px; }
-            .af-delta-up-bad-14d       { color: ${COLORS.bad};        font-size: 11px; }
+            .af-delta-up-good-7d      { color: ${COLORS.good};      font-size: 11px; }
+            .af-delta-up-potential-7d { color: ${COLORS.potential};  font-size: 11px; }
+            .af-delta-up-bad-7d       { color: ${COLORS.bad};        font-size: 11px; }
             .af-delta-jail-up   { color: ${COLORS.bad};    font-size: 11px; }
             .af-delta-jail-down { color: ${COLORS.good};   font-size: 11px; }
             .af-delta-zero { color: ${COLORS.muted};  font-size: 11px; }
@@ -478,19 +478,19 @@
         if (d === 0) return `<span class="af-delta-zero">±0</span>`;
 
         let cls;
-        if (window === '1mo') {
-            if (d >= 1000)     cls = 'af-delta-up-good';
-            else if (d >= 500) cls = 'af-delta-up-potential';
+        if (window === '14d') {
+            if (d >= 500)      cls = 'af-delta-up-good';
+            else if (d >= 250) cls = 'af-delta-up-potential';
             else               cls = 'af-delta-up-bad';
         } else {
-            if (d >= 500)      cls = 'af-delta-up-good-14d';
-            else if (d >= 250) cls = 'af-delta-up-potential-14d';
-            else               cls = 'af-delta-up-bad-14d';
+            if (d >= 250)      cls = 'af-delta-up-good-7d';
+            else if (d >= 125) cls = 'af-delta-up-potential-7d';
+            else               cls = 'af-delta-up-bad-7d';
         }
         return `<span class="${cls}">+${fmtNum(d)}</span>`;
     }
 
-    function buildResultTable(statsNow, statsWeeks2, statsMonth1) {
+    function buildResultTable(statsNow, statsDays7, statsDays14) {
         const STAT_ORDER = [
             'jailed',
             'criminaloffenses',
@@ -520,17 +520,17 @@
         let rows = '';
         for (const stat of STAT_ORDER) {
             const now    = statsNow[stat];
-            const weeks2 = statsWeeks2[stat];
-            const m1     = statsMonth1[stat];
+            const days7  = statsDays7[stat];
+            const d14    = statsDays14[stat];
             const isJail = stat === 'jailed';
-            const deltaWeeks2 = isJail ? deltaJail(now, weeks2) : deltaCrime(now, weeks2, '14d');
-            const delta1mo    = isJail ? deltaJail(now, m1)     : deltaCrime(now, m1,     '1mo');
+            const deltaDays7 = isJail ? deltaJail(now, days7) : deltaCrime(now, days7, '7d');
+            const delta14d   = isJail ? deltaJail(now, d14)   : deltaCrime(now, d14,   '14d');
             rows += `
                 <tr>
                     <td class="af-stat-name${isJail ? ' af-highlight' : ''}">${LABELS[stat] ?? stat}</td>
                     <td class="${isJail ? 'af-highlight' : ''}">${fmtNum(now)}</td>
-                    <td>${fmtNum(weeks2)} ${deltaWeeks2}</td>
-                    <td>${fmtNum(m1)} ${delta1mo}</td>
+                    <td>${fmtNum(days7)} ${deltaDays7}</td>
+                    <td>${fmtNum(d14)} ${delta14d}</td>
                 </tr>
             `;
         }
@@ -542,8 +542,8 @@
                     <tr>
                         <th>Stat</th>
                         <th>Now</th>
+                        <th>7 Days Ago</th>
                         <th>14 Days Ago</th>
-                        <th>1 Month Ago</th>
                     </tr>
                 </thead>
                 <tbody>${rows}</tbody>
@@ -558,8 +558,8 @@
 
         const steps = [
             { label: 'Fetching current stats…',            ts: nowTs() },
+            { label: 'Fetching stats from 7 days ago…',    ts: sevenDaysAgoTs() },
             { label: 'Fetching stats from 14 days ago…',   ts: fourteenDaysAgoTs() },
-            { label: 'Fetching stats from 1 month ago…',   ts: oneMonthAgoTs() },
         ];
 
         const results = [];
@@ -582,9 +582,9 @@
         statusEl.style.display = 'none';
         statusEl.innerHTML = '';
 
-        const [statsNow, statsWeeks2, statsMonth1] = results;
+        const [statsNow, statsDays7, statsDays14] = results;
 
-        const verdict = classify(statsNow, statsWeeks2, statsMonth1);
+        const verdict = classify(statsNow, statsDays7, statsDays14);
         const { label, color } = VERDICT[verdict];
 
         updateBadge(badge, verdict);
@@ -597,7 +597,7 @@
         verdictBox.innerHTML = label;
 
         tableWrap.style.display = 'block';
-        tableWrap.innerHTML = buildResultTable(statsNow, statsWeeks2, statsMonth1);
+        tableWrap.innerHTML = buildResultTable(statsNow, statsDays7, statsDays14);
     }
 
     // ─── Injection ────────────────────────────────────────────────────────────
